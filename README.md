@@ -18,6 +18,7 @@ Interactive Bash toolkit for Kubernetes on Ubuntu 24.04: node initialization, au
 - [快速开始](#快速开始)
 - [版本管理](#版本管理)
 - [项目结构](#项目结构)
+- [变更记录](CHANGELOG.md)
 - [文档与验证记录](#文档与验证记录)
 - [贡献与问题反馈](#贡献与问题反馈)
 - [许可证](#许可证)
@@ -191,6 +192,7 @@ atlas-kubekit/
 
 ## 文档与验证记录
 
+- [变更记录](CHANGELOG.md)：首个 `0.1.0` 版本的新增能力、兼容性说明与已知限制。
 - [部署与运维指南](docs/deployment-guide.md)：完整流程图、逐步解释、命令、恢复与验收。
 - [插件历史验证](docs/validation/addons-e2e.md)：14 项插件的核心功能验证摘要及配置边界。
 - [04 历史验证](docs/validation/verify-results.md)：角色菜单、组件检查、网络/PVC/HTTP/TLS 验证摘要。

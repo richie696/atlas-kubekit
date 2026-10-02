@@ -59,7 +59,7 @@ git commit -m "feat: introduce Atlas KubeKit deployment toolkit"
 
 1. 确认 VERSION 的目标版本，将 CHANGELOG 待发布条目转为实际发布版本和日期，保留未完成项。
 2. 用对应 commit 的真实验证记录说明兼容条件、升级影响和已知限制。
-3. 创建 tag 和 GitHub Release，发布源码包；release notes 链接 CHANGELOG 与完整部署指南。
+3. 创建 tag 和 GitHub Release，发布源码包；可将 [CHANGELOG](../CHANGELOG.md) 中对应版本条目作为 release notes，保留验证边界与已知限制，链接完整部署指南。发布时将“待发布”改为实际发布日期。
 4. 仓库版和服务器运行副本是两份文件。更新源码不等于已更新 `/usr/local/lib/k8s-deploy/` 或 systemd 使用的副本；升级前确认续跑状态、备份和回退方案。
 
 历史摘要中固定的日期、版本和源码 hash 应保留，不应改写为新版本已验证。格式或目录改动也需要明确其验证范围。
