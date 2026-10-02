@@ -1,0 +1,631 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Atlas KubeKit | By Atlas Richie
+# Phase 4: role-aware inspection and explicitly selected functional checks.
+# No deployment configuration is sourced; no cluster repair is performed.
+set -uo pipefail
+LANGUAGE=en
+LANGUAGE_SUPPLIED=0 HELP_REQUESTED=0
+STATE=/var/lib/k8s-deploy
+KUBE_CONFIG=/etc/kubernetes/admin.conf
+ERRORS=0 SKIPS=0
+TEST_NS='' TEST_OWNED=0
+RESOURCES='' DISCOVERED=0
+LABELS=() ACTIONS=()
+t() { if [ "$LANGUAGE" = zh ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+ui_format() { local en="$1" zh="$2"; shift 2; printf "$(t "$en" "$zh")" "$@"; }
+note() { printf '\n%s\n' "$(t "$1" "$2")"; }
+warn() { printf '[%s] %s\n' "$(t 'WARN' '警告')" "$(t "$1" "$2")" >&2; }
+skip() { SKIPS=$((SKIPS + 1)); printf '[%s] %s\n' "$(t 'SKIP' '跳过')" "$(t "$1" "$2")"; }
+ask() { local answer; read -r -p "$(t "$1" "$2") [$3]: " answer || return 1; printf '%s' "${answer:-$3}"; }
+confirm() { local answer; answer="$(ask "$1" "$2" no)" || return 1; case "${answer,,}" in yes|y|是) return 0;; *) return 1;; esac; }
+run() {
+  printf '\n$'; printf ' %q' "$@"; printf '\n'
+  if "$@"; then return 0; else
+    local status=$?; ERRORS=$((ERRORS + 1)); ui_format '[FAIL] exit=%s\n' '[失败] 退出码=%s\n' "$status" >&2; return "$status"
+  fi
+}
+optional() { if command -v "$1" >/dev/null 2>&1; then run "$@"; else skip "Missing tool: $1" "缺少工具：$1"; fi; }
+k() { kubectl --kubeconfig="$KUBE_CONFIG" --request-timeout=15s "$@"; }
+choose_language() {
+  local selection default=1
+  [ "$LANGUAGE" = zh ] && default=2
+  while true; do
+    printf '\nLanguage / 语言\n 1) English\n 2) 中文 (Chinese)\n'
+    read -r -p "Select language / 选择语言 [$default]: " selection || return 1
+    case "${selection:-$default}" in
+      1|en|EN) LANGUAGE=en; break;;
+      2|zh|ZH) LANGUAGE=zh; break;;
+      *) warn 'Enter 1 (English) or 2 (Chinese).' '请输入 1（英文）或 2（中文）。';;
+    esac
+  done
+  ui_format 'Language: English\n' '当前语言：中文\n'
+}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --lang) case "${2:-}" in en|zh) LANGUAGE="$2"; LANGUAGE_SUPPLIED=1; shift 2;; *) note 'Use --lang en or --lang zh' '请使用 --lang en 或 --lang zh' >&2; exit 1;; esac;;
+    --help|-h) HELP_REQUESTED=1; shift;;
+    *) ui_format 'Unknown argument: %s\n' '未知参数：%s\n' "$1" >&2; exit 1;;
+  esac
+done
+if [ "$HELP_REQUESTED" -eq 1 ]; then
+  note 'Atlas KubeKit | By Atlas Richie' 'Atlas KubeKit | By Atlas Richie'
+  note 'Usage: sudo bash 04-verify-cluster.sh [--lang en|zh]' '用法：sudo bash 04-verify-cluster.sh [--lang en|zh]'
+  note 'Select a language at startup (default: English), or use --lang to skip selection. Use L in the menu to switch languages.' '启动时选择语言（默认英文），或用 --lang 跳过选择。菜单中输入 L 可切换语言。'
+  note 'Role detected from hostname: cpN / lbN / wN.' '根据 hostname 识别角色：cpN / lbN / wN。'
+  exit 0
+fi
+[ "${BASH_VERSINFO[0]}" -ge 4 ] || { note 'Bash 4+ is required (run on Ubuntu).' '需要 Bash 4 或更高版本，请在 Ubuntu 上运行。' >&2; exit 1; }
+[ -t 0 ] || { note 'An interactive terminal is required.' '需要交互式终端。' >&2; exit 1; }
+[ "$LANGUAGE_SUPPLIED" -eq 1 ] || choose_language || exit 0
+[ "$(id -u)" -eq 0 ] || { note 'Run with sudo.' '请使用 sudo 运行。' >&2; exit 1; }
+SELF="$(hostname -s)"
+ROLE=unknown
+[[ "$SELF" =~ ^cp[1-9][0-9]*$ ]] && ROLE=cp
+[[ "$SELF" =~ ^lb[1-9][0-9]*$ ]] && ROLE=lb
+[[ "$SELF" =~ ^w[1-9][0-9]*$ ]] && ROLE=worker
+API_AVAILABLE=0
+if [ "$ROLE" = cp ] && command -v kubectl >/dev/null && [ -r "$KUBE_CONFIG" ]; then API_AVAILABLE=1; fi
+field() { [ -r "$STATE/node.conf" ] || return 0; awk -F= -v key="$1" '$1==key {print substr($0,index($0,"=")+1); exit}' "$STATE/node.conf"; }
+SSH_USER="$(field SSH_USER)"
+if ! [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]; then SSH_USER="${SUDO_USER:-ubuntu}"; fi
+SSH_HOME="$(getent passwd "$SSH_USER" | cut -d: -f6)"
+valid_name() {
+  local label
+  [ "${#1}" -le 253 ] || return 1
+  local -a labels
+  IFS=. read -r -a labels <<< "$1"
+  [ "${#labels[@]}" -gt 0 ] && [[ "$1" != *. ]] || return 1
+  for label in "${labels[@]}"; do
+    [[ "$label" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] && [ "${#label}" -le 63 ] || return 1
+  done
+}
+valid_image() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9./_:@-]*$ ]]; }
+valid_url() { [[ "$1" =~ ^https?://[^[:space:]]+$ ]]; }
+local_host() {
+  optional hostnamectl
+  optional uptime
+  optional free -h
+  optional df -h /
+  optional timedatectl status
+  optional ip -br -4 addr
+  optional ip -4 route
+  optional resolvectl status
+  optional swapon --show
+}
+identity() {
+  ui_format 'hostname=%s role=%s\n' '主机名=%s 角色=%s\n' "$SELF" "$ROLE"
+  for marker in ready cluster-ready; do
+    if [ -f "$STATE/$marker" ]; then ui_format '%s: present\n' '%s：已存在\n' "$marker"; else ui_format '%s: absent\n' '%s：不存在\n' "$marker"; fi
+  done
+  note 'Markers record past checks, not current health.' '完成标记仅表示历史检查，不表示当前健康。'
+  if [ -r "$SSH_HOME/.k8s-deploy/node.conf" ]; then
+    run grep -E '^(PHASE1_READY|NAME|ROLE|IP|OS_ID|OS_VERSION|ARCH)=' "$SSH_HOME/.k8s-deploy/node.conf"
+  else skip 'Public node manifest missing.' '缺少公开的 node.conf。'; fi
+  optional cat /etc/machine-id
+  [ ! -r /sys/class/dmi/id/product_uuid ] || run cat /sys/class/dmi/id/product_uuid
+  optional ip -br link
+  [ ! -r /etc/ssh/ssh_host_ed25519_key.pub ] || optional ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+}
+ssh_mesh() {
+  local n address count=0
+  if [ -z "$SSH_HOME" ] || [ ! -r "$SSH_HOME/.ssh/id_ed25519" ]; then skip 'Administrator node key missing.' '缺少管理员节点密钥。'; return; fi
+  command -v ssh >/dev/null || { skip 'SSH client missing.' '缺少 SSH 客户端。'; return; }
+  while read -r address n; do
+    [[ "$n" =~ ^(lb|cp|w)[1-9][0-9]*$ ]] || continue
+    count=$((count + 1))
+    printf '\n%s -> %s (%s)\n' "$SELF" "$n" "$address"
+    run resolve_identity "$n" "$address"
+    [ "$n" = "$SELF" ] && continue
+    run ssh_identity "$n"
+  done < <(awk '!/^#/ && $1 !~ /^127\./ {for(i=2;i<=NF;i++) if($i ~ /^(lb|cp|w)[1-9][0-9]*$/) print $1,$i}' /etc/hosts | sort -u)
+  [ "$count" -gt 0 ] || skip 'No cluster hostname mappings in /etc/hosts.' '/etc/hosts 中没有集群主机名映射。'
+  note 'This tests outgoing SSH from this node only; repeat on other nodes for full mesh coverage.' '只检查本机发起的 SSH；完整互信需在其他节点重复运行。'
+}
+resolve_identity() {
+  local actual
+  actual="$(getent ahostsv4 "$1" | awk 'NR==1 {print $1}')" || return 1
+  ui_format 'hostname=%s expected-IP=%s resolved-IP=%s\n' '主机名=%s 预期 IP=%s 解析 IP=%s\n' "$1" "$2" "$actual"
+  [ "$actual" = "$2" ]
+}
+ssh_identity() {
+  local actual
+  actual="$(sudo -H -u "$SSH_USER" timeout 15 ssh -i "$SSH_HOME/.ssh/id_ed25519" \
+    -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 \
+    -o StrictHostKeyChecking=yes "$SSH_USER@$1" hostname -s)" || return 1
+  ui_format 'expected-hostname=%s actual-hostname=%s\n' '预期主机名=%s 实际主机名=%s\n' "$1" "$actual"
+  [ "$actual" = "$1" ]
+}
+services() {
+  local -a units=(ssh)
+  case "$ROLE" in cp|worker) units+=(kubelet containerd);; lb) units+=(haproxy keepalived);; esac
+  run systemctl is-active "${units[@]}"
+  run systemctl is-enabled "${units[@]}"
+  run systemctl --no-pager --full status "${units[@]}"
+  note 'Recent service logs may contain application information.' '近期服务日志可能包含业务信息。'
+  local unit
+  for unit in "${units[@]}"; do run journalctl -u "$unit" -n 35 --no-pager; done
+}
+disks() {
+  optional lsblk -f
+  optional df -hT
+  optional findmnt -T / -o TARGET,SOURCE,FSTYPE,OPTIONS
+  case "$ROLE" in
+    cp) optional findmnt -T /var/lib/etcd -o TARGET,SOURCE,FSTYPE,OPTIONS;;
+    worker) if [ -d /os_data ]; then optional findmnt -T /os_data -o TARGET,SOURCE,FSTYPE,OPTIONS; else skip '/os_data absent; a separate disk is optional.' '/os_data 不存在，独立盘为可选。'; fi;;
+  esac
+  note 'An ancestor mount (such as /) is valid when using the system disk.' '使用系统盘时，显示 / 等上级挂载点是正常结果。'
+}
+node_assertion() {
+  k get nodes -o json | python3 -c '
+import json,sys
+try: rows=json.load(sys.stdin)["items"]
+except (ValueError,KeyError): sys.exit(sys.argv[1])
+bad=[]
+if not rows: sys.exit(sys.argv[2])
+for n in rows:
+ c={x["type"]:x["status"] for x in n["status"].get("conditions",[])}
+ ok=c.get("Ready")=="True" and all(c.get(x)=="False" for x in ("MemoryPressure","DiskPressure","PIDPressure"))
+ print(n["metadata"]["name"], c, sys.argv[3] if ok else sys.argv[4])
+ if not ok: bad.append(n["metadata"]["name"])
+sys.exit(1 if bad else 0)' "$(t 'Node response unavailable; inspect kubectl error above' '无法获取节点响应，请检查上方 kubectl 错误')" "$(t 'No Kubernetes nodes returned' '未返回任何 Kubernetes 节点')" "$(t 'PASS' '通过')" "$(t 'FAIL' '失败')"
+}
+nodes() {
+  run k get nodes -o wide || return
+  run k get nodes -o 'custom-columns=NAME:.metadata.name,UNSCHEDULABLE:.spec.unschedulable,TAINTS:.spec.taints'
+  if command -v python3 >/dev/null; then run node_assertion; else skip 'Python 3 missing; conditions assertion skipped.' '缺少 Python 3，跳过条件断言。'; fi
+}
+pod_assertion() {
+  k get pods -A -o json | python3 -c '
+import json,sys
+try: rows=json.load(sys.stdin)["items"]
+except (ValueError,KeyError): sys.exit(sys.argv[1])
+bad=[]
+for p in rows:
+ s=p["status"]; phase=s.get("phase",""); name=p["metadata"]["namespace"]+"/"+p["metadata"]["name"]
+ if phase=="Succeeded": continue
+ ready=any(c.get("type")=="Ready" and c.get("status")=="True" for c in s.get("conditions",[]))
+ if phase!="Running" or not ready or p["metadata"].get("deletionTimestamp"): bad.append(name); print(sys.argv[2],name,phase)
+print(sys.argv[3],len(bad)); sys.exit(1 if bad else 0)' "$(t 'Pod response unavailable; inspect kubectl error above' '无法获取 Pod 响应，请检查上方 kubectl 错误')" "$(t 'ATTENTION' '需关注')" "$(t 'Pods requiring attention:' '需关注的 Pod 数量：')"
+}
+pods() {
+  run k get pods -A -o wide
+  run k get deployment,daemonset,statefulset,job,cronjob -A
+  if command -v python3 >/dev/null; then run pod_assertion; else skip 'Python 3 missing; readiness assertion skipped.' '缺少 Python 3，跳过就绪断言。'; fi
+}
+api_health() {
+  run k get --raw='/readyz?verbose'
+  run k get --raw='/livez?verbose'
+  run k version
+  run k -n kube-system get lease
+  note 'API checks use admin.conf with TLS verification; controller leader leases are listed above.' 'API 通过 admin.conf 验证 TLS；上方列出控制器领导者租约。'
+}
+system_health() {
+  local ds p
+  run k -n kube-system get pods -o wide
+  run k -n kube-system get daemonset/cilium deployment/cilium-operator deployment/coredns
+  for ds in daemonset/cilium deployment/cilium-operator deployment/coredns; do
+    run k -n kube-system rollout status "$ds" --timeout=90s
+  done
+  run k -n kube-system get pods -l component=kube-apiserver -o wide
+  run k -n kube-system get pods -l component=kube-controller-manager -o wide
+  run k -n kube-system get pods -l component=kube-scheduler -o wide
+  local names
+  if names="$(k -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[*].metadata.name}')"; then
+    for p in $names; do run k -n kube-system exec "$p" -c cilium-agent -- cilium-dbg status; done
+  else ERRORS=$((ERRORS + 1)); fi
+}
+dns_status() {
+  run k -n kube-system get pods -l k8s-app=kube-dns -o wide
+  run k -n kube-system get deployment/coredns service/kube-dns
+  run k -n kube-system get endpointslice -l kubernetes.io/service-name=kube-dns -o wide
+  run k -n kube-system rollout status deployment/coredns --timeout=90s
+  note 'Use the network test to make a real DNS request from a Pod.' '需要从 Pod 真实发起 DNS 请求时，请选择网络功能测试。'
+}
+etcd_health() {
+  local -a args=(--endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt --key=/etc/kubernetes/pki/etcd/healthcheck-client.key --dial-timeout=5s --command-timeout=10s)
+  run k -n kube-system get pods -l component=etcd -o wide
+  run k -n kube-system exec "etcd-$SELF" -- etcdctl "${args[@]}" member list -w table
+  run k -n kube-system exec "etcd-$SELF" -- etcdctl "${args[@]}" endpoint health --cluster
+  run k -n kube-system exec "etcd-$SELF" -- etcdctl "${args[@]}" endpoint status --cluster -w table
+  run k -n kube-system exec "etcd-$SELF" -- etcdctl "${args[@]}" alarm list
+  note 'Endpoint health performs a consensus proposal. Snapshot/restore and member-loss recovery are not tested here.' 'endpoint health 会执行共识提案；此项不测试快照恢复或成员故障恢复。'
+}
+certificates() { optional kubeadm certs check-expiration; optional openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -dates -subject -ext subjectAltName; }
+resource() {
+  local kind="$1"; shift
+  if [ "$DISCOVERED" -eq 0 ]; then
+    if RESOURCES="$(k api-resources -o name)"; then DISCOVERED=1; else ERRORS=$((ERRORS + 1)); warn 'API discovery failed.' 'API 资源发现失败。'; return 1; fi
+  fi
+  if printf '%s\n' "$RESOURCES" | grep -Fxq "$kind"; then run k get "$kind" "$@"; else skip "Resource not installed: $kind" "未安装资源：$kind"; fi
+}
+network_status() {
+  run k get service,endpointslice -A -o wide
+  run k get ingress -A
+  run k get ingressclass
+  run k get networkpolicy -A
+  local r
+  for r in gatewayclasses.gateway.networking.k8s.io gateways.gateway.networking.k8s.io httproutes.gateway.networking.k8s.io referencegrants.gateway.networking.k8s.io ciliumendpoints.cilium.io ciliumnetworkpolicies.cilium.io; do resource "$r" -A; done
+}
+storage_status() {
+  run k get storageclass,pv
+  run k get pvc -A
+  run k get csidriver,csinode,volumeattachment
+  resource volumesnapshots.snapshot.storage.k8s.io -A
+  resource volumesnapshotclasses.snapshot.storage.k8s.io
+}
+events() { run k get events -A --sort-by=.metadata.creationTimestamp; }
+metrics() { run k top nodes; run k top pods -A; }
+rbac() {
+  run k auth can-i get nodes
+  run k auth can-i list pods --all-namespaces
+  run k auth can-i create pods --all-namespaces
+  run k get serviceaccount -A
+  run k get clusterrolebinding
+  note 'Checks the current admin identity, not every workload service account.' '这里只核对当前管理员身份，不代表每个工作负载 ServiceAccount 权限正确。'
+}
+addon_names=( 'Metrics Server' 'cert-manager' 'Prometheus / Alertmanager / Grafana' 'Loki + Alloy' 'Argo CD' 'External Secrets' 'ExternalDNS' 'Velero' 'NFS CSI' 'Envoy Gateway' 'Kyverno' 'MetalLB' 'KEDA' 'Traefik Ingress' )
+addon_ns=(kube-system cert-manager monitoring logging argocd external-secrets external-dns velero kube-system envoy-gateway-system kyverno metallb-system keda traefik)
+addon_detail() {
+  local choice="$1" ns="${addon_ns[$(($1 - 1))]}" r
+  run k -n "$ns" get deployment,daemonset,statefulset,pod,service -o wide
+  case "$choice" in
+    1) run k get apiservice v1beta1.metrics.k8s.io; metrics;;
+    2) for r in issuers.cert-manager.io clusterissuers.cert-manager.io certificates.cert-manager.io certificaterequests.cert-manager.io; do resource "$r" -A; done;;
+    3) for r in prometheuses.monitoring.coreos.com alertmanagers.monitoring.coreos.com servicemonitors.monitoring.coreos.com prometheusrules.monitoring.coreos.com; do resource "$r" -A; done;;
+    4) note 'Controller status only. A log ingestion/query test requires your Loki endpoint and tenant configuration.' '此处只查看组件；日志写入/查询需要实际 Loki 入口及租户配置。';;
+    5) resource applications.argoproj.io -A; resource applicationsets.argoproj.io -A;;
+    6) resource secretstores.external-secrets.io -A; resource clustersecretstores.external-secrets.io; resource externalsecrets.external-secrets.io -A;;
+    7) run k -n "$ns" get deployment external-dns; note 'Verify actual records at your authoritative DNS server; controller availability is not DNS synchronization proof.' '实际记录需到权威 DNS 服务核对，控制器可用不能证明 DNS 同步。';;
+    8) for r in backupstoragelocations.velero.io backups.velero.io restores.velero.io schedules.velero.io; do resource "$r" -A; done;;
+    9) storage_status;;
+    10) for r in gatewayclasses.gateway.networking.k8s.io gateways.gateway.networking.k8s.io httproutes.gateway.networking.k8s.io securitypolicies.gateway.envoyproxy.io backendtrafficpolicies.gateway.envoyproxy.io; do resource "$r" -A; done;;
+    11) for r in clusterpolicies.kyverno.io policies.kyverno.io policyreports.wgpolicyk8s.io clusterpolicyreports.wgpolicyk8s.io validatingpolicies.policies.kyverno.io; do resource "$r" -A; done;;
+    12) resource ipaddresspools.metallb.io -A; resource l2advertisements.metallb.io -A; run k get service -A -o wide;;
+    13) resource scaledobjects.keda.sh -A; resource scaledjobs.keda.sh -A; run k get hpa -A;;
+    14) run k get ingressclass; run k get ingress -A; resource ingressroutes.traefik.io -A; resource middlewares.traefik.io -A;;
+  esac
+  note 'Resource/condition inspection is not a complete plug-in E2E test. Use docs/validation/addons-e2e.md for business-level acceptance examples.' '资源/条件查看不等于完整插件 E2E；业务验收示例见 docs/validation/addons-e2e.md。'
+}
+addons() {
+  local choice i
+  if command -v helm >/dev/null; then run helm --kubeconfig "$KUBE_CONFIG" list -A; else skip 'Helm missing; Kubernetes resource checks remain available.' '缺少 Helm，仍可查询 Kubernetes 资源。'; fi
+  while true; do
+    for i in "${!addon_names[@]}"; do printf '%2d) %s\n' "$((i + 1))" "${addon_names[$i]}"; done
+    printf ' 0) %s\n' "$(t 'Back' '返回')"
+    choice="$(ask 'Plug-in number' '插件编号' 0)" || return
+    case "$choice" in 0) return;; [1-9]|1[0-4]) addon_detail "$choice";; *) warn 'Choose 0-14.' '请选择 0～14。';; esac
+  done
+}
+cleanup_test() {
+  if [ "$TEST_OWNED" -eq 1 ] && [[ "$TEST_NS" =~ ^k8s-verify-[a-z0-9-]+$ ]]; then
+    if ! k delete namespace "$TEST_NS" --wait=false; then warn "Cleanup failed; manually delete namespace $TEST_NS" "清理失败，请手工删除命名空间 $TEST_NS"; ERRORS=$((ERRORS + 1)); fi
+  fi
+  TEST_NS='' TEST_OWNED=0
+}
+trap cleanup_test EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+new_test() {
+  TEST_NS="k8s-verify-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  # Ownership is established only after successful create; never adopt an existing namespace.
+  run k create namespace "$TEST_NS" || { TEST_NS=''; return 1; }
+  TEST_OWNED=1
+}
+test_diagnostics() {
+  local names n
+  run k -n "$TEST_NS" get pods,pvc -o wide
+  run k -n "$TEST_NS" get events --sort-by=.metadata.creationTimestamp
+  if names="$(k -n "$TEST_NS" get pods -o jsonpath='{.items[*].metadata.name}')"; then
+    for n in $names; do
+      case "$n" in writer|reader|web) run k -n "$TEST_NS" logs "$n" --tail=20;; esac
+    done
+  fi
+}
+ready_node() { [ "$(k get node "$1" -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}')" = True ]; }
+network_test() {
+  local first second image pod_ip service_name cluster_ip domain
+  run k get nodes -o wide || return
+  first="$(ask 'First Ready node (web)' '第一个 Ready 节点（web）' '')" || return
+  second="$(ask 'Different Ready node (probe)' '另一个 Ready 节点（probe）' '')" || return
+  valid_name "$first" && valid_name "$second" && [ "$first" != "$second" ] || { warn 'Enter two distinct node names.' '请输入两个不同的节点名。'; return; }
+  run ready_node "$first" && run ready_node "$second" || { warn 'Both nodes must be Ready and accessible.' '两个节点必须 Ready 且可访问。'; return; }
+  image="$(ask 'BusyBox-compatible image reachable by nodes' '节点可拉取的 BusyBox 兼容镜像' busybox:1.36)" || return
+  valid_image "$image" || { warn 'Invalid image name.' '镜像名称无效。'; return; }
+  confirm 'Create temporary Pods/Service on these nodes, then delete the test namespace?' '是否创建临时 Pod/Service 并在结束后清理测试命名空间？' || { skip 'Network test cancelled; no resources created.' '已取消网络测试，未创建资源。'; return; }
+  new_test || return
+  # BusyBox httpd provides a known response, allowing content assertions, not just an open port.
+  if ! run k -n "$TEST_NS" apply -f - <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  labels: {app: verify-web}
+spec:
+  nodeName: $first
+  tolerations:
+    - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+  containers:
+    - name: web
+      image: $image
+      command: [sh, -c, 'mkdir -p /tmp/www; echo k8s-verify-network > /tmp/www/index.html; exec httpd -f -p 8080 -h /tmp/www']
+      readinessProbe: {httpGet: {path: /, port: 8080}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: web}
+spec:
+  selector: {app: verify-web}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: probe}
+spec:
+  nodeName: $second
+  tolerations:
+    - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+  containers:
+    - name: probe
+      image: $image
+      command: [sh, -c, 'sleep 900']
+YAML
+  then test_diagnostics; cleanup_test; return; fi
+  if run k -n "$TEST_NS" wait --for=condition=Ready pod/web pod/probe --timeout=180s; then
+    if pod_ip="$(k -n "$TEST_NS" get pod web -o jsonpath='{.status.podIP}')" && cluster_ip="$(k -n "$TEST_NS" get service web -o jsonpath='{.spec.clusterIP}')"; then
+      # BusyBox nslookup may not search dotted partial names. Use the actual cluster domain.
+      domain="$(k -n "$TEST_NS" exec probe -- cat /etc/resolv.conf | awk '$1=="search" {for(i=2;i<=NF;i++) if($i ~ /\.svc\./) {sub(/^.*\.svc\./,"",$i); print $i; exit}}')"
+      if valid_name "$domain"; then
+        service_name="web.$TEST_NS.svc.$domain"
+        run k -n "$TEST_NS" exec probe -- nslookup "$service_name"
+        run k -n "$TEST_NS" exec probe -- sh -c 'wget -T 10 -qO- "$1" | grep -qx k8s-verify-network' sh "http://$service_name:8080"
+      else ERRORS=$((ERRORS + 1)); warn 'Cannot determine cluster DNS domain from probe resolv.conf.' '无法从 probe 的 resolv.conf 获取集群 DNS 域名。'; fi
+      run k -n "$TEST_NS" exec probe -- sh -c 'wget -T 10 -qO- "$1" | grep -qx k8s-verify-network' sh "http://$cluster_ip:8080"
+      run k -n "$TEST_NS" exec probe -- sh -c 'wget -T 10 -qO- "$1" | grep -qx k8s-verify-network' sh "http://$pod_ip:8080"
+    else ERRORS=$((ERRORS + 1)); fi
+  fi
+  test_diagnostics
+  cleanup_test
+  note 'Only the selected direction/node pair was tested. Image or admission failures do not prove a CNI failure.' '只验证所选节点对和方向；镜像或准入失败不等于 CNI 故障。'
+}
+volume_pod() {
+  local name="$1" command="$2"
+  run k -n "$TEST_NS" apply -f - <<YAML
+apiVersion: v1
+kind: Pod
+metadata: {name: $name}
+spec:
+  securityContext:
+    runAsUser: $VOLUME_UID
+    runAsGroup: $VOLUME_GID
+    fsGroup: $VOLUME_GID
+  containers:
+    - name: probe
+      image: $VOLUME_IMAGE
+      command: [sh, -c, 'set -e; $command']
+      readinessProbe:
+        exec:
+          command: [sh, -c, 'test "\$(cat /data/probe.txt)" = k8s-verify-persistence']
+        periodSeconds: 2
+      volumeMounts: [{name: data, mountPath: /data}]
+  volumes:
+    - name: data
+      persistentVolumeClaim: {claimName: data}
+YAML
+}
+pvc_test() {
+  local sc size reclaim
+  run k get storageclass
+  sc="$(ask 'Existing StorageClass (no default assumed)' '已有 StorageClass（不猜测默认值）' '')" || return
+  valid_name "$sc" || { warn 'Invalid StorageClass name.' 'StorageClass 名称无效。'; return; }
+  reclaim="$(k get storageclass "$sc" -o jsonpath='{.reclaimPolicy}')" || { ERRORS=$((ERRORS + 1)); return; }
+  size="$(ask 'Test PVC size' '测试 PVC 大小' 1Gi)" || return
+  [[ "$size" =~ ^[1-9][0-9]*(Mi|Gi)$ ]] || { warn 'Use a positive size such as 100Mi or 1Gi.' '请输入 100Mi、1Gi 等正数容量。'; return; }
+  VOLUME_IMAGE="$(ask 'BusyBox-compatible image' 'BusyBox 兼容镜像' busybox:1.36)" || return
+  valid_image "$VOLUME_IMAGE" || { warn 'Invalid image name.' '镜像名称无效。'; return; }
+  note 'Choose UID/GID with write permission on the volume. NFS root_squash may deny root; fsGroup is not a permission guarantee.' '请选择在存储卷上有写权限的 UID/GID。NFS root_squash 可能拒绝 root；fsGroup 不保证能修复权限。'
+  VOLUME_UID="$(ask 'Container UID' '容器 UID' 1000)" || return
+  VOLUME_GID="$(ask 'Container GID and fsGroup' '容器 GID 及 fsGroup' 1000)" || return
+  [[ "$VOLUME_UID" =~ ^(0|[1-9][0-9]{0,8})$ ]] && [[ "$VOLUME_GID" =~ ^(0|[1-9][0-9]{0,8})$ ]] || { warn 'UID/GID must be nonnegative integers below 1000000000.' 'UID/GID 必须为小于 1000000000 的非负整数。'; return; }
+  ui_format 'StorageClass=%s reclaimPolicy=%s size=%s\n' 'StorageClass=%s 回收策略=%s 容量=%s\n' "$sc" "$reclaim" "$size"
+  note 'Retain may leave a PV/backend volume after cleanup. No backend files will be deleted directly.' 'Retain 策略可能留下 PV/存储端卷；脚本不会直接删除存储端文件。'
+  confirm 'Create a PVC and two successive Pods to test persistence, then clean up?' '是否创建 PVC、先后两个 Pod 验证持久化，然后清理？' || { skip 'PVC test cancelled; no resources created.' '已取消 PVC 测试，未创建资源。'; return; }
+  new_test || return
+  if ! run k -n "$TEST_NS" apply -f - <<YAML
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: data}
+spec:
+  storageClassName: $sc
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: $size}}
+YAML
+  then cleanup_test; return; fi
+  if volume_pod writer 'echo k8s-verify-persistence > /data/probe.txt; sleep 900' && run k -n "$TEST_NS" wait --for=condition=Ready pod/writer --timeout=180s; then
+    if run k -n "$TEST_NS" exec writer -- sh -c 'test "$(cat /data/probe.txt)" = k8s-verify-persistence' && run k -n "$TEST_NS" delete pod writer --wait=true --timeout=90s && volume_pod reader 'sleep 900' && run k -n "$TEST_NS" wait --for=condition=Ready pod/reader --timeout=180s; then
+      run k -n "$TEST_NS" exec reader -- sh -c 'test "$(cat /data/probe.txt)" = k8s-verify-persistence'
+    fi
+  fi
+  test_diagnostics
+  cleanup_test
+  note 'Tests persistence across Pod recreation, not cross-node mounting or backup/restore. Check for retained PVs if applicable.' '验证 Pod 重建后的持久化，不代表跨节点挂载或备份恢复；必要时检查遗留 PV。'
+}
+http_test() {
+  local url header expected actual ca address target target_host target_port
+  url="$(ask 'Application URL (HTTP/HTTPS; no embedded credentials)' '业务 URL（HTTP/HTTPS，不含凭据）' '')" || return
+  valid_url "$url" && [[ "$url" != *'@'* ]] || { warn 'Invalid URL or embedded credentials.' 'URL 无效或包含凭据。'; return; }
+  header="$(ask 'Host header for virtual-host routing (blank to use URL host)' '虚拟主机 Host 请求头（留空使用 URL 主机）' '')" || return
+  [[ "$header" != *$'\r'* && "$header" != *$'\n'* ]] || return
+  expected="$(ask 'Expected HTTP status' '期望 HTTP 状态码' 200)" || return
+  [[ "$expected" =~ ^[1-5][0-9][0-9]$ ]] || return
+  local -a args=(--silent --show-error --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' --url "$url")
+  [ -z "$header" ] || args+=(-H "Host: $header")
+  if [[ "$url" = https://* ]]; then
+    ca="$(ask 'Optional CA certificate file (absolute path; blank for system trust)' '可选 CA 证书文件（绝对路径，留空使用系统信任）' '')" || return
+    if [ -n "$ca" ]; then
+      [[ "$ca" = /* ]] && [ -r "$ca" ] && [ -f "$ca" ] || { warn 'CA file must be a readable absolute file path.' 'CA 必须是可读取的绝对文件路径。'; return; }
+      args+=(--cacert "$ca")
+    fi
+  fi
+  if command -v python3 >/dev/null; then
+    address="$(ask 'Optional target IPv4 for DNS override (keeps URL hostname/SNI)' '可选目标 IPv4，用于 DNS 覆盖（保留 URL 主机名/SNI）' '')" || return
+    if [ -n "$address" ]; then
+      if ! target="$(python3 -c 'import ipaddress,sys,urllib.parse; ipaddress.IPv4Address(sys.argv[2]); u=urllib.parse.urlparse(sys.argv[1]); print(u.hostname,u.port or (443 if u.scheme=="https" else 80))' "$url" "$address" 2>/dev/null)"; then warn 'Invalid target IPv4 or URL port.' '目标 IPv4 或 URL 端口无效。'; return; fi
+      read -r target_host target_port <<< "$target"
+      args+=(--resolve "$target_host:$target_port:$address" --noproxy "$target_host")
+    fi
+  fi
+  # TLS always verifies URL hostname, including when --resolve redirects the connection.
+  if actual="$(curl "${args[@]}")"; then
+    ui_format 'HTTP expected=%s actual=%s\n' 'HTTP 预期状态=%s 实际状态=%s\n' "$expected" "$actual"
+    if [ "$expected" != "$actual" ]; then ERRORS=$((ERRORS + 1)); warn 'Unexpected response status.' '响应状态码不符合预期。'; fi
+  else ERRORS=$((ERRORS + 1)); warn 'HTTP/TLS request failed.' 'HTTP/TLS 请求失败。'; fi
+  note 'TLS verifies the URL hostname; a Host header alone does not change SNI. Status-code matching does not validate response content.' 'TLS 验证 URL 主机名，仅修改 Host 不会改变 SNI；状态码一致不代表响应内容正确。'
+}
+api_address() {
+  # Parse non-secret fields only. Never source cluster.conf or print full kubeconfig.
+  if [ "$ROLE" = lb ] && [ -r /etc/keepalived/keepalived.conf ]; then
+    awk '/virtual_ipaddress[[:space:]]*\{/ {inside=1; next} inside && /}/ {inside=0} inside && $1 ~ /^[0-9]+\./ {split($1,a,"/"); print a[1]; exit}' /etc/keepalived/keepalived.conf
+  elif [ -r /etc/kubernetes/kubelet.conf ]; then awk '$1=="server:" {print $2; exit}' /etc/kubernetes/kubelet.conf
+  fi
+}
+endpoint_input() {
+  ENDPOINT="$(api_address)"
+  if [[ "$ENDPOINT" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    local port
+    port="$(awk '/^[[:space:]]*bind[[:space:]]/ && $2 !~ /7000/ {split($2,a,":"); print a[length(a)]; exit}' /etc/haproxy/haproxy.cfg 2>/dev/null)"
+    ENDPOINT="https://$ENDPOINT:${port:-6443}"
+  fi
+  ENDPOINT="$(ask 'API endpoint URL' 'API 入口 URL' "$ENDPOINT")" || return 1
+  [[ "$ENDPOINT" =~ ^https://[A-Za-z0-9._:-]+$ ]] || { warn 'Use https://host:port without a path.' '请使用不带路径的 https://host:port。'; return 1; }
+}
+lb_health() {
+  run systemctl is-active haproxy keepalived
+  run systemctl --no-pager --full status haproxy keepalived
+  optional ss -lntp
+  optional haproxy -c -f /etc/haproxy/haproxy.cfg
+  optional keepalived --config-test -f /etc/keepalived/keepalived.conf
+  if command -v curl >/dev/null; then run curl --noproxy '*' -fsS --connect-timeout 5 --max-time 10 http://127.0.0.1:7000/\;csv; fi
+}
+lb_backends() {
+  local name address count=0
+  while read -r name address; do
+    [[ "$address" =~ ^[A-Za-z0-9._-]+:[0-9]+$ ]] || continue
+    count=$((count + 1))
+    ui_format '\nbackend=%s target=%s\n' '\n后端=%s 目标=%s\n' "$name" "$address"
+    run timeout 5 bash -c 'exec 3<>/dev/tcp/"$1"/"$2"' _ "${address%:*}" "${address##*:}"
+  done < <(awk '$1=="server" {print $2,$3}' /etc/haproxy/haproxy.cfg)
+  [ "$count" -gt 0 ] || skip 'No HAProxy server entries found.' '未找到 HAProxy 后端配置。'
+  note 'TCP connectivity is not API readiness; check VIP readyz separately.' 'TCP 连通不代表 API 就绪，请另查 VIP readyz。'
+}
+lb_vip() {
+  optional ip -br -4 addr
+  optional ip neigh show
+  endpoint_input || return
+  note 'Unauthenticated VIP probe skips TLS verification; CP API checks validate certificates.' 'VIP 匿名探测跳过 TLS 校验；CP 的 API 检查会验证证书。'
+  run curl --noproxy '*' -kfsS --connect-timeout 5 --max-time 10 "$ENDPOINT/readyz"
+}
+failover_guide() {
+  note 'Manual drill only: verify at least two healthy LBs first, identify current VIP holder, keep two consoles open.' '仅提供手工演练指引：先确认至少两台 LB 健康，识别 VIP 持有者，保持两个终端。'
+  note '1. Current holder: sudo systemctl stop keepalived' '1. 当前 VIP 持有节点：sudo systemctl stop keepalived'
+  note '2. Other LB: ip -br -4 addr; check VIP API /readyz' '2. 另一台 LB：ip -br -4 addr，并检查 VIP API /readyz'
+  note '3. Original holder: sudo systemctl start keepalived' '3. 原 VIP 持有节点：sudo systemctl start keepalived'
+  note '4. Check VIP ownership and API again; confirm only one holder.' '4. 再次检查 VIP 归属及 API，确认仅有一个持有节点。'
+  note 'No services are stopped by this menu. If API checks fail, restore Keepalived immediately.' '本菜单不停止服务；若 API 检查失败，应立即恢复 Keepalived。'
+}
+worker_runtime() {
+  run systemctl is-active kubelet containerd
+  if command -v crictl >/dev/null && command -v python3 >/dev/null; then run cri_health; else skip 'crictl or Python missing; CRI health assertion skipped.' '缺少 crictl 或 Python，跳过 CRI 健康断言。'; fi
+  optional crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a
+  optional crictl --runtime-endpoint unix:///run/containerd/containerd.sock images
+  optional ctr -n k8s.io containers list
+}
+cri_health() {
+  crictl --runtime-endpoint unix:///run/containerd/containerd.sock info | python3 -c '
+import json,sys
+try: conditions=json.load(sys.stdin)["status"]["conditions"]
+except (ValueError,KeyError): sys.exit(sys.argv[1])
+states={c["type"]:c["status"] for c in conditions}
+print(sys.argv[2],states)
+sys.exit(0 if states.get("RuntimeReady") is True and states.get("NetworkReady") is True else 1)' "$(t 'CRI status unavailable; inspect crictl error above' '无法获取 CRI 状态，请检查上方 crictl 错误')" "$(t 'Runtime conditions:' '运行时条件：')"
+}
+worker_cni() {
+  optional ip -br link
+  optional ip route
+  optional ls -l /etc/cni/net.d
+  note 'Inspect this node Cilium Pod from a CP for agent health. This list does not prove Pod connectivity.' 'Cilium agent 健康请从 CP 查询本节点的 Pod；网卡和路由列表不证明 Pod 连通。'
+}
+worker_api() {
+  endpoint_input || return
+  optional python3 -c 'import socket,sys,urllib.parse; u=urllib.parse.urlparse(sys.argv[1]); s=socket.create_connection((u.hostname,u.port or 6443),timeout=5); print(sys.argv[2],u.netloc); s.close()' "$ENDPOINT" "$(t 'API TCP reachable:' 'API TCP 可达：')"
+  note 'Only node-to-API TCP is tested; authentication and API readiness must be checked on CP/LB.' '这里只验证节点到 API 的 TCP；认证及 API 就绪需在 CP/LB 上检查。'
+}
+summary() {
+  local_host; identity; disks
+  case "$ROLE" in
+    cp) run systemctl is-active kubelet containerd; if [ "$API_AVAILABLE" -eq 1 ]; then nodes; pods; api_health; else skip 'Cluster queries unavailable on this CP.' '本 CP 无法执行集群查询。'; fi;;
+    worker) run systemctl is-active kubelet containerd;;
+    lb) run systemctl is-active haproxy keepalived; optional ss -lntp;;
+  esac
+  note 'This is a read-only snapshot, not full functional acceptance.' '这是只读状态快照，不是全功能验收。'
+}
+add_menu() { LABELS+=("$(t "$1" "$2")"); ACTIONS+=("$3"); }
+build_menu() {
+  LABELS=() ACTIONS=()
+  add_menu 'Host: CPU/RAM/time/IP/routes/DNS/swap' '主机：CPU/内存/时间/IP/路由/DNS/swap' local_host
+  add_menu 'Phase markers, identity and public host fingerprint' '阶段标记、节点身份及主机公钥指纹' identity
+  add_menu 'Hostname resolution and outgoing SSH mesh' '主机名解析及本机发起的 SSH 互信' ssh_mesh
+  add_menu 'Local services and recent logs' '本机服务状态及近期日志' services
+  add_menu 'Disks, free space and actual data mounts' '磁盘、剩余容量及实际数据挂载' disks
+  if [ "$API_AVAILABLE" -eq 1 ]; then
+    add_menu 'Cluster nodes, pressure conditions and taints' '集群节点、资源压力条件及污点' nodes
+    add_menu 'All Pods and workload readiness' '全部 Pod 与工作负载就绪状态' pods
+    add_menu 'API readyz/livez/version and leader leases' 'API readyz/livez/版本及领导者租约' api_health
+    add_menu 'System components / Cilium agent health / rollouts' '系统组件 / Cilium agent 健康 / rollout' system_health
+    add_menu 'CoreDNS replicas, Service and EndpointSlices' 'CoreDNS 副本、Service 与 EndpointSlice' dns_status
+    add_menu 'etcd members, endpoint health/status and alarms' 'etcd 成员、endpoint 健康/状态及告警' etcd_health
+    command -v kubeadm >/dev/null && add_menu 'Certificates: expiry and API SANs' '证书：到期时间及 API SAN' certificates
+    add_menu 'Services, ingress, Gateway API and network policies' 'Service、Ingress、Gateway API 及网络策略' network_status
+    add_menu 'StorageClasses, PV/PVC, CSI and snapshots' 'StorageClass、PV/PVC、CSI 及快照' storage_status
+    add_menu 'Cluster events ordered by time' '按时间查看集群事件' events
+    add_menu 'Metrics: node and Pod CPU/RAM (requires Metrics Server)' '指标：节点与 Pod CPU/内存（需 Metrics Server）' metrics
+    add_menu 'Plug-in submenu: all 14 add-ons from phase 3' '插件二级菜单：03 的全部 14 项插件' addons
+    add_menu '[Creates resources] Cross-node Pod/Service/DNS test' '【创建资源】跨节点 Pod/Service/DNS 测试' network_test
+    add_menu '[Creates resources] PVC write / recreate Pod / read' '【创建资源】PVC 写入 / 重建 Pod / 读取' pvc_test
+    command -v curl >/dev/null && add_menu 'Application HTTP/TLS and expected response status' '业务 HTTP/TLS 及预期响应状态' http_test
+    add_menu 'Current identity RBAC and service accounts' '当前身份 RBAC 及 ServiceAccount' rbac
+  fi
+  if [ "$ROLE" = lb ]; then
+    add_menu 'HAProxy/Keepalived status, config validation and stats' 'HAProxy/Keepalived 状态、配置校验及统计' lb_health
+    [ ! -r /etc/haproxy/haproxy.cfg ] || add_menu 'HAProxy backends: direct TCP checks' 'HAProxy 后端：逐一 TCP 检查' lb_backends
+    command -v curl >/dev/null && add_menu 'VIP address ownership and API readyz' 'VIP 本机归属及 API readyz' lb_vip
+    add_menu 'Manual LB failover drill instructions' 'LB 故障切换手工演练指引' failover_guide
+  fi
+  if [ "$ROLE" = worker ]; then
+    add_menu 'kubelet/containerd, CRI containers and images' 'kubelet/containerd、CRI 容器及镜像' worker_runtime
+    add_menu 'Local CNI files, links and routes' '本机 CNI 文件、网卡及路由' worker_cni
+    command -v python3 >/dev/null && add_menu 'Node-to-API TCP connectivity' '本节点到 API 的 TCP 连通' worker_api
+  fi
+  add_menu 'Read-only inspection snapshot (no functional tests)' '只读巡检汇总（不执行资源创建测试）' summary
+}
+while true; do
+  build_menu
+  printf '\n=== %s | %s (%s) ===\n' "$(t 'Atlas KubeKit | Kubernetes inspection' 'Atlas KubeKit | Kubernetes 查看与验证')" "$SELF" "$ROLE"
+  [ "$ROLE" != unknown ] || warn 'Unknown hostname; showing common host checks only.' '无法识别 hostname，仅显示公共主机检查。'
+  if [ "$ROLE" = cp ] && [ "$API_AVAILABLE" -eq 0 ]; then warn 'kubectl or admin.conf missing; cluster menu hidden.' '缺少 kubectl 或 admin.conf，已隐藏集群菜单。'; fi
+  for i in "${!LABELS[@]}"; do printf '%2d) %s\n' "$((i + 1))" "${LABELS[$i]}"; done
+  printf ' L) %s\n 0) %s\n' "$(t 'Language / 语言' '语言 / Language')" "$(t 'Exit' '退出')"
+  choice="$(ask 'Select number' '选择编号' 0)" || exit 0
+  case "$choice" in 0) exit 0;; L|l) choose_language || exit 0; continue;; esac
+  found=0
+  for i in "${!LABELS[@]}"; do
+    if [ "$choice" = "$((i + 1))" ]; then
+      found=1; ERRORS=0; SKIPS=0; DISCOVERED=0; RESOURCES=''
+      "${ACTIONS[$i]}"
+      ui_format '\nCommand/assertion results (not a full acceptance verdict): failures=%s skipped=%s\n' '\n命令/断言结果（不是完整验收结论）：失败=%s 跳过=%s\n' "$ERRORS" "$SKIPS"
+      read -r -p "$(t 'Press Enter to return to menu...' '按回车返回菜单……')" _ || exit 0
+      break
+    fi
+  done
+  [ "$found" -eq 1 ] || warn 'Choose a number visible in this node menu.' '请选择本节点菜单中显示的编号。'
+done

@@ -1,0 +1,819 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Atlas KubeKit | By Atlas Richie
+# Phase 3: interactive, independent Kubernetes add-on installer.
+# Run on a control-plane node (or a host with an administrator kubeconfig).
+set -Eeuo pipefail
+umask 077
+
+# Script-owned UI text. Tool output and Kubernetes resource values keep their original language.
+UI_LANG=en
+ui_text() {
+  if [ "$UI_LANG" = zh ]; then
+    case "$1" in
+      'Enter yes or no.') printf '%s' '请输入 yes/y（是）或 no/n（否）。';;
+      ' (yes/no)') printf '%s' '（yes/no，或 是/否）';;
+      ' (absolute YAML file path%s)') printf '%s' '（YAML 文件绝对路径%s）';;
+      ', or none') printf '%s' '，或输入 none 跳过';;
+      '[WARN] A values file is required for this add-on.\n') printf '%s' '[WARN] 此插件必须提供 values 文件。\n';;
+      '[WARN] Enter a readable, nonempty absolute file path.\n') printf '%s' '[WARN] 请输入可读取且非空文件的绝对路径。\n';;
+      'Usage: sudo bash 03-install-addons.sh [--lang en|zh]\nRun after phase 2 from a control-plane node with administrator kubeconfig.\nDefault language: English. Use L in the add-on menu to switch languages.\n') printf '%s' '用法：sudo bash 03-install-addons.sh [--lang en|zh]\n阶段二完成后，在具有管理员 kubeconfig 的控制平面节点运行。\n默认语言为英文；在插件主菜单输入 L 可切换语言。\n';;
+      'Unknown argument: %s') printf '%s' '未知参数：%s';;
+      '--lang requires en or zh.') printf '%s' '--lang 的值必须是 en 或 zh。';;
+      'An interactive terminal is required.') printf '%s' '请在交互式终端中运行此脚本。';;
+      'kubectl is missing; complete phase 2 first.') printf '%s' '未找到 kubectl；请先完成阶段二。';;
+      'Helm is missing; run this on cp1 after phase 2 or install Helm 3 first.') printf '%s' '未找到 Helm；请在阶段二完成后的 cp1 上运行，或先安装 Helm 3。';;
+      'Python 3 is required.') printf '%s' '需要安装 Python 3。';;
+      'Kubernetes API is not ready or the kubeconfig is not authorized.') printf '%s' 'Kubernetes API 未就绪，或 kubeconfig 没有访问权限。';;
+      'Helm repository %s points to %s; expected %s. Resolve the name conflict first.') printf '%s' 'Helm 仓库 %s 当前指向 %s，预期为 %s。请先解决仓库名称冲突。';;
+      'Existing Helm release: %s in %s\n') printf '%s' '发现已有 Helm release：%s，命名空间：%s\n';;
+      'Reconfigure or upgrade this release?') printf '%s' '是否重新配置或升级此 release？';;
+      '[WARN] Review upstream chart upgrade notes, especially CRD changes, before continuing.\n') printf '%s' '[WARN] 继续前请查看上游 Chart 升级说明，尤其是 CRD 变更。\n';;
+      'No chart version found for %s') printf '%s' '未找到 %s 的 Chart 版本';;
+      'Chart version for %s') printf '%s' '%s 的 Chart 版本';;
+      'Chart version must be a release version such as 1.2.3.') printf '%s' 'Chart 版本必须为正式版本，例如 1.2.3。';;
+      'Installing %s (%s %s) in %s') printf '%s' '正在安装 %s（%s %s），命名空间：%s';;
+      'Additional Helm values') printf '%s' '额外的 Helm values';;
+      'Metrics Server replicas (1-3)') printf '%s' 'Metrics Server 副本数（1-3）';;
+      'Replicas must be 1, 2, or 3.') printf '%s' '副本数必须是 1、2 或 3。';;
+      'Allow insecure kubelet TLS (test clusters only)?') printf '%s' '是否跳过 kubelet TLS 验证（仅限测试集群）？';;
+      'Next: create an Issuer or ClusterIssuer before requesting certificates.\n') printf '%s' '下一步：申请证书前，先创建 Issuer 或 ClusterIssuer。\n';;
+      'Prometheus retention (for example 15d)') printf '%s' 'Prometheus 数据保留时间（例如 15d）';;
+      'Retention must look like 15d, 2w, or 24h.') printf '%s' '保留时间格式必须类似 15d、2w 或 24h。';;
+      'StorageClass for monitoring PVCs (none for ephemeral)') printf '%s' '监控 PVC 使用的 StorageClass（none 表示临时存储）';;
+      'Generate a strong Grafana admin password?') printf '%s' '是否生成高强度 Grafana 管理员密码？';;
+      'openssl is required to generate a password.') printf '%s' '生成密码需要 openssl。';;
+      'Password generation failed.') printf '%s' '密码生成失败。';;
+      'Grafana admin password (hidden): ') printf '%s' 'Grafana 管理员密码（输入不显示）：';;
+      'Grafana password must be at least 16 characters.') printf '%s' 'Grafana 密码至少需要 16 个字符。';;
+      'Invalid StorageClass name.') printf '%s' 'StorageClass 名称无效。';;
+      'StorageClass %s does not exist.') printf '%s' 'StorageClass %s 不存在。';;
+      'Prometheus PVC size') printf '%s' 'Prometheus PVC 容量';;
+      'Grafana PVC size') printf '%s' 'Grafana PVC 容量';;
+      'Alertmanager PVC size') printf '%s' 'Alertmanager PVC 容量';;
+      'PVC size must look like 30Gi.') printf '%s' 'PVC 容量格式必须类似 30Gi。';;
+      'Monitoring data will be ephemeral. Continue?') printf '%s' '监控数据将使用临时存储。是否继续？';;
+      'Generated Grafana admin password (record it securely): %s\n') printf '%s' '已生成 Grafana 管理员密码（请妥善保存）：%s\n';;
+      'Grafana admin password is also stored in its Kubernetes Secret.\n') printf '%s' 'Grafana 管理员密码同时保存在对应的 Kubernetes Secret 中。\n';;
+      'Loki storage/deployment Helm values') printf '%s' 'Loki 存储和部署 Helm values';;
+      'Alloy log collection Helm values') printf '%s' 'Alloy 日志采集 Helm values';;
+      'Next: create a provider-specific SecretStore or ClusterSecretStore.\n') printf '%s' '下一步：按外部密钥服务商创建 SecretStore 或 ClusterSecretStore。\n';;
+      'DNS provider (for example alibabacloud, aws, cloudflare)') printf '%s' 'DNS 服务商（例如 alibabacloud、aws、cloudflare）';;
+      'Invalid provider name.') printf '%s' '服务商名称无效。';;
+      'Managed DNS domain suffix') printf '%s' '管理的 DNS 域名后缀';;
+      'Invalid domain suffix.') printf '%s' '域名后缀无效。';;
+      'Unique TXT owner ID for this cluster') printf '%s' '此集群唯一的 TXT 所有者 ID';;
+      'Invalid TXT owner ID.') printf '%s' 'TXT 所有者 ID 无效。';;
+      'Also watch Gateway API HTTPRoutes?') printf '%s' '是否同时监听 Gateway API HTTPRoute？';;
+      'Install Gateway API CRDs before enabling HTTPRoute DNS source.') printf '%s' '启用 HTTPRoute DNS 来源前，请先安装 Gateway API CRD。';;
+      'Provider credentials/workload identity Helm values') printf '%s' '服务商凭据或工作负载身份 Helm values';;
+      'Velero provider/storage/plugin Helm values') printf '%s' 'Velero 服务商、存储和插件 Helm values';;
+      'Next: create a backup schedule and test a restore; keep etcd snapshots separately.\n') printf '%s' '下一步：创建备份计划并验证恢复；另行保存 etcd 快照。\n';;
+      'NFS server DNS name or IPv4') printf '%s' 'NFS 服务器域名或 IPv4 地址';;
+      'Invalid NFS server name.') printf '%s' 'NFS 服务器名称无效。';;
+      'NFS exported absolute path') printf '%s' 'NFS 导出的绝对路径';;
+      'Invalid NFS export path.') printf '%s' 'NFS 导出路径无效。';;
+      'StorageClass name') printf '%s' 'StorageClass 名称';;
+      'PV reclaim policy (Retain/Delete)') printf '%s' 'PV 回收策略（Retain 保留 / Delete 删除）';;
+      'Reclaim policy must be Retain or Delete.') printf '%s' '回收策略必须为 Retain 或 Delete。';;
+      'Existing StorageClass %s uses %s; it was not changed.') printf '%s' '已有 StorageClass %s 使用 %s；未修改该配置。';;
+      'StorageClass %s already points to the requested NFS export.\n') printf '%s' 'StorageClass %s 已指向指定的 NFS 导出。\n';;
+      'Gateway API CRDs already exist outside this release; check their owner/version before installing Envoy Gateway.') printf '%s' '已存在不属于此 release 的 Gateway API CRD；安装 Envoy Gateway 前请检查其所有者和版本。';;
+      'Envoy Gateway chart version') printf '%s' 'Envoy Gateway Chart 版本';;
+      'Invalid Envoy Gateway version.') printf '%s' 'Envoy Gateway 版本无效。';;
+      'Next: create GatewayClass, Gateway, routes, and external traffic exposure.\n') printf '%s' '下一步：创建 GatewayClass、Gateway、路由，并配置外部流量入口。\n';;
+      'Next: add policies gradually, starting with audit/warn.\n') printf '%s' '下一步：从审计和告警模式开始，逐步添加策略。\n';;
+      'Unused IPv4 pool (CIDR or first-last)') printf '%s' '未使用的 IPv4 地址池（CIDR 或 起始IP-结束IP）';;
+      'Enter a valid IPv4 CIDR or first-last range.') printf '%s' '请输入有效的 IPv4 CIDR 或 起始IP-结束IP 范围。';;
+      'MetalLB pool name') printf '%s' 'MetalLB 地址池名称';;
+      'Invalid pool name.') printf '%s' '地址池名称无效。';;
+      'Pool: %s. Verify it excludes DHCP leases, node IPs, and the API VIP.\n') printf '%s' '地址池：%s。请确认其不包含 DHCP 分配地址、节点 IP 和 API VIP。\n';;
+      'Is this range reserved for Kubernetes LoadBalancer Services?') printf '%s' '是否已将此地址范围预留给 Kubernetes LoadBalancer Service？';;
+      'Pool %s already has range %s; it was not changed.') printf '%s' '地址池 %s 已使用范围 %s；未修改该配置。';;
+      'L2Advertisement %s selects %s; it was not changed.') printf '%s' 'L2Advertisement %s 已选择 %s；未修改该配置。';;
+      'MetalLB Layer 2 pool %s is configured.\n') printf '%s' 'MetalLB Layer 2 地址池 %s 已配置。\n';;
+      'Next: define a workload ScaledObject or ScaledJob and its authentication.\n') printf '%s' '下一步：创建工作负载的 ScaledObject 或 ScaledJob，并配置认证。\n';;
+      'IngressClass traefik already exists outside this release; inspect its owner before installing.') printf '%s' '已存在不属于此 release 的 IngressClass traefik；安装前请检查其所有者。';;
+      'Traefik controller replicas') printf '%s' 'Traefik 控制器副本数';;
+      'Replicas must be a positive integer.') printf '%s' '副本数必须是正整数。';;
+      'Traefik Service type (NodePort/LoadBalancer/ClusterIP)') printf '%s' 'Traefik Service 类型（NodePort/LoadBalancer/ClusterIP）';;
+      'Invalid Service type.') printf '%s' 'Service 类型无效。';;
+      '[WARN] A LoadBalancer provider must be configured before this Service receives an external IP.\n') printf '%s' '[WARN] 此 Service 获得外部 IP 前，必须配置负载均衡提供方。\n';;
+      'Next: create an Ingress with spec.ingressClassName: traefik and configure external traffic to the Service.\n') printf '%s' '下一步：创建设置了 spec.ingressClassName: traefik 的 Ingress，并将外部流量接入 Service。\n';;
+      'Select an add-on number (L to change language): ') printf '%s' '请选择插件编号（输入 L 切换语言）：';;
+      '\n--- Add-on details ---\n') printf '%s' '\n--- 插件详细介绍 ---\n';;
+      'Continue to installation and configuration?') printf '%s' '是否继续安装并配置？';;
+      'Installation cancelled for this add-on.\n') printf '%s' '已取消安装此插件。\n';;
+      '[WARN] Select a number from 0 to 14, or L to change language.\n') printf '%s' '[WARN] 请输入 0-14 的编号，或输入 L 切换语言。\n';;
+      'Language: English\n') printf '%s' '当前语言：中文\n';;
+      '[WARN] Enter 1 (English) or 2 (Chinese).\n') printf '%s' '[WARN] 请输入 1（英文）或 2（中文）。\n';;
+      *) printf '%s' "$1";;
+    esac
+  else
+    printf '%s' "$1"
+  fi
+}
+ui_printf() { local format; format="$(ui_text "$1")"; shift; printf -- "$format" "$@"; }
+select_language() {
+  local selection default=1
+  [ "$UI_LANG" = zh ] && default=2
+  while true; do
+    printf '\nLanguage / 语言\n 1) English\n 2) 中文 (Chinese)\n'
+    read -r -p "Select language / 选择语言 [$default]: " selection || return 1
+    case "${selection:-$default}" in
+      1|en|EN) UI_LANG=en; break;;
+      2|zh|ZH) UI_LANG=zh; break;;
+      *) ui_printf '[WARN] Enter 1 (English) or 2 (Chinese).\n' >&2;;
+    esac
+  done
+  ui_printf 'Language: English\n'
+}
+
+die() { printf '[ERROR] ' >&2; ui_printf "$@" >&2; printf '\n' >&2; exit 1; }
+say() { printf '\n==> '; ui_printf "$@"; printf '\n'; }
+ask() { local answer; read -r -p "$(ui_text "$1") [$2]: " answer; printf '%s' "${answer:-$2}"; }
+yes_no() {
+  local answer
+  answer="$(ask "$(ui_text "$1")$(ui_text ' (yes/no)')" "$2")"
+  case "${answer,,}" in yes|y|是) return 0;; no|n|否) return 1;; *) printf '[WARN] ' >&2; ui_printf 'Enter yes or no.' >&2; printf '\n' >&2; return 1;; esac
+}
+valid_dns() { [[ "$1" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] && [ "${#1}" -le 253 ]; }
+valid_version() { [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9.-]+)?$ ]]; }
+valid_ipv4_pool() {
+  python3 - "$1" <<'PY'
+import ipaddress, sys
+try:
+    value = sys.argv[1]
+    if '-' in value:
+        first, last = (ipaddress.IPv4Address(part) for part in value.split('-', 1))
+        assert first <= last
+    else:
+        ipaddress.IPv4Network(value, strict=True)
+except (ValueError, AssertionError):
+    sys.exit(1)
+PY
+}
+values_file() {
+  local label="$1" required="${2:-no}" path hint=''
+  [ "$required" = yes ] || hint="$(ui_text ', or none')"
+  while true; do
+    path="$(ask "$(ui_text "$label")$(ui_printf ' (absolute YAML file path%s)' "$hint")" none)"
+    if [ "$path" = none ] && [ "$required" = no ]; then printf '%s' ''; return 0; fi
+    [ "$path" != none ] || { ui_printf '[WARN] A values file is required for this add-on.\n' >&2; continue; }
+    [[ "$path" = /* ]] && [ -r "$path" ] && [ -s "$path" ] || { ui_printf '[WARN] Enter a readable, nonempty absolute file path.\n' >&2; continue; }
+    printf '%s' "$path"; return 0
+  done
+}
+
+language_supplied=0
+help_requested=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --lang)
+      case "${2:-}" in en|zh) UI_LANG="$2";; *) die '--lang requires en or zh.';; esac
+      language_supplied=1; shift 2;;
+    --help|-h) help_requested=1; shift;;
+    *) die 'Unknown argument: %s' "$1";;
+  esac
+done
+if [ "$help_requested" -eq 1 ]; then
+  ui_printf 'Atlas KubeKit | By Atlas Richie\n'
+  ui_printf 'Usage: sudo bash 03-install-addons.sh [--lang en|zh]\nRun after phase 2 from a control-plane node with administrator kubeconfig.\nDefault language: English. Use L in the add-on menu to switch languages.\n'
+  exit 0
+fi
+[ -t 0 ] || die 'An interactive terminal is required.'
+[ "$language_supplied" -eq 1 ] || select_language || exit 0
+command -v kubectl >/dev/null || die 'kubectl is missing; complete phase 2 first.'
+command -v helm >/dev/null || die 'Helm is missing; run this on cp1 after phase 2 or install Helm 3 first.'
+command -v python3 >/dev/null || die 'Python 3 is required.'
+if [ -z "${KUBECONFIG:-}" ] && [ -s /etc/kubernetes/admin.conf ]; then
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+fi
+kubectl --request-timeout=10s get --raw=/readyz >/dev/null || die 'Kubernetes API is not ready or the kubeconfig is not authorized.'
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+repo() {
+  local name="$1" url="$2" actual
+  actual="$(helm repo list -o json 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next((x["url"] for x in data if x["name"]==sys.argv[1]), ""))' "$name" || true)"
+  if [ -n "$actual" ] && [ "$actual" != "$url" ]; then die 'Helm repository %s points to %s; expected %s. Resolve the name conflict first.' "$name" "$actual" "$url"; fi
+  [ -n "$actual" ] || helm repo add "$name" "$url"
+  helm repo update "$name"
+}
+latest_chart_version() {
+  helm search repo "$1" --versions -o json | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(next((x["version"] for x in rows if x["name"] == sys.argv[1] and "-" not in x["version"]), ""))' "$1"
+}
+release_present() { helm status "$1" -n "$2" >/dev/null 2>&1; }
+prepare_release() {
+  local release="$1" namespace="$2"
+  EXISTING=0
+  if release_present "$release" "$namespace"; then
+    EXISTING=1
+    ui_printf 'Existing Helm release: %s in %s\n' "$release" "$namespace"
+    yes_no 'Reconfigure or upgrade this release?' no || return 1
+    ui_printf '[WARN] Review upstream chart upgrade notes, especially CRD changes, before continuing.\n'
+  fi
+  return 0
+}
+install_chart() {
+  local alias="$1" url="$2" chart="$3" release="$4" namespace="$5" version
+  shift 5
+  local -a args=("$@")
+  repo "$alias" "$url"
+  version="$(latest_chart_version "$chart")"
+  [ -n "$version" ] || die 'No chart version found for %s' "$chart"
+  version="$(ask "$(ui_printf 'Chart version for %s' "$chart")" "$version")"
+  valid_version "$version" || die 'Chart version must be a release version such as 1.2.3.'
+  if [ "$EXISTING" -eq 1 ]; then args+=(--reuse-values); fi
+  say 'Installing %s (%s %s) in %s' "$release" "$chart" "$version" "$namespace"
+  helm upgrade --install "$release" "$chart" --version "$version" \
+    --namespace "$namespace" --create-namespace --wait --atomic --timeout 15m "${args[@]}"
+  helm status "$release" -n "$namespace"
+}
+optional_values_arg() {
+  local path
+  path="$(values_file 'Additional Helm values' no)"
+  [ -z "$path" ] || EXTRA_VALUES+=(-f "$path")
+}
+
+description_en() {
+  case "$1" in
+    1) cat <<'EOF'
+Metrics Server exposes recent node and Pod CPU/memory usage through metrics.k8s.io.
+It supports kubectl top and resource-based HPA. It is not a monitoring database.
+The API server must reach its Service, and Metrics Server must reach each kubelet.
+Config: replica count, kubelet TLS choice, and optional Helm values. Keep kubelet
+TLS verification enabled unless this is a test cluster with self-signed certs.
+EOF
+       ;;
+    2) cat <<'EOF'
+cert-manager requests, stores, and renews TLS certificates for Kubernetes apps.
+This installs its controllers, webhook, and CRDs. Certificate issuance also
+requires an Issuer or ClusterIssuer, which is specific to your CA/DNS provider.
+Config: optional Helm values. No public CA credentials are assumed.
+EOF
+       ;;
+    3) cat <<'EOF'
+kube-prometheus-stack installs Prometheus, Alertmanager, Grafana, exporters,
+dashboards, and alert rules. It needs a retention and storage decision.
+Config: retention, optional StorageClass/PVC sizes, Grafana admin password,
+and optional extra Helm values. Without a StorageClass, metrics are ephemeral.
+EOF
+       ;;
+    4) cat <<'EOF'
+Loki stores searchable logs; Alloy collects and forwards Kubernetes logs.
+Production Loki needs an object-storage design. This installer requires two
+user-provided values files: one for Loki storage/deployment and one for Alloy's
+collection pipeline and Loki endpoint. It will not use deprecated loki-stack.
+Loki: https://grafana.com/docs/loki/latest/setup/install/helm/
+Alloy: https://grafana.com/docs/alloy/latest/configure/kubernetes/
+EOF
+       ;;
+    5) cat <<'EOF'
+Argo CD reconciles Kubernetes applications from Git or Helm sources.
+The chart installs the controller and UI as internal ClusterIP Services.
+You must configure repositories, RBAC, and external access for your organization.
+Config: optional Helm values; no Git credentials are requested here.
+EOF
+       ;;
+    6) cat <<'EOF'
+External Secrets Operator copies secret values from a supported external
+secret manager into Kubernetes Secrets. This installs the operator only.
+Create a SecretStore/ClusterSecretStore and credentials for your provider later.
+Config: optional Helm values. No provider is silently chosen.
+EOF
+       ;;
+    7) cat <<'EOF'
+ExternalDNS manages DNS records from Kubernetes Services and Ingresses.
+Gateway HTTPRoutes can be included when Gateway API CRDs are installed.
+It requires a DNS provider, domain boundary, ownership ID, and provider auth.
+Config: provider, domain, owner ID, optional HTTPRoute source, and a required values file for credentials
+or workload identity. Policy defaults to upsert-only (no automatic deletions).
+Chart values: https://github.com/kubernetes-sigs/external-dns/tree/master/charts/external-dns
+EOF
+       ;;
+    8) cat <<'EOF'
+Velero backs up Kubernetes resources and, with a suitable volume mechanism,
+persistent-volume data. It does not replace scheduled etcd snapshots.
+Config: a required provider-specific values file for backup storage location,
+bucket, credentials/identity, and provider plugin. No object store is assumed.
+Chart values: https://github.com/vmware-tanzu/helm-charts/tree/main/charts/velero
+EOF
+       ;;
+    9) cat <<'EOF'
+NFS CSI dynamically provisions PVCs as directories on an existing NFS export.
+The NFS server must already exist and be reachable from every Kubernetes node.
+Config: server, exported path, StorageClass name, and reclaim policy.
+It will not make this the cluster's default StorageClass automatically.
+EOF
+       ;;
+    10) cat <<'EOF'
+Envoy Gateway implements Gateway API for application HTTP/TCP routing.
+Its Helm chart installs Gateway API CRDs on a new installation. You still need
+to create a Gateway/Route and arrange a LoadBalancer or other external access.
+This is separate from the lb1/lb2 VIP used by the Kubernetes API.
+Config: chart version and optional Helm values. Existing foreign Gateway API
+CRDs require a separate compatibility review and are not overwritten here.
+EOF
+        ;;
+    11) cat <<'EOF'
+Kyverno validates, mutates, and generates resources through Kubernetes policies.
+Installing its controllers does not enable a policy set. Start with audit/warn
+policies, then choose enforcement rules for your own workloads.
+Config: optional Helm values.
+EOF
+        ;;
+    12) cat <<'EOF'
+MetalLB assigns external IPs to LoadBalancer Services on bare metal or Proxmox.
+This option configures Layer 2 advertisement and needs a dedicated address range
+on the local network. The range must exclude node IPs and the Kubernetes API VIP.
+It is generally unsuitable for cloud VPCs; use the cloud load balancer there.
+Config: IPv4 address range, pool name, and optional Helm values.
+EOF
+        ;;
+    13) cat <<'EOF'
+KEDA scales Deployments and Jobs from event sources such as queues or metrics.
+It installs the operator and CRDs; each workload still needs a ScaledObject or
+ScaledJob and, if required, event-source authentication.
+Config: optional Helm values.
+EOF
+        ;;
+    14) cat <<'EOF'
+Traefik is a maintained controller for standard Kubernetes Ingress resources.
+Use spec.ingressClassName: traefik in each application Ingress. The chart also
+supports Gateway API separately, but this option enables the Ingress provider.
+Community ingress-nginx was retired in March 2026; Traefik is not a drop-in
+replacement for its annotations or behavior. Review existing routes before migration.
+Config: controller replicas, Service type, and optional Helm values. NodePort
+needs network access to the assigned ports; LoadBalancer needs a working provider
+such as MetalLB or a cloud load balancer. This does not reuse the Kubernetes API VIP.
+EOF
+        ;;
+  esac
+}
+
+description() {
+  if [ "$UI_LANG" = en ]; then description_en "$1"; return; fi
+  case "$1" in
+    1) cat <<'EOF'
+Metrics Server 提供节点和 Pod 的即时 CPU、内存使用数据（metrics.k8s.io）。
+用于 kubectl top 和按资源使用量扩缩容的 HPA，不存储历史监控数据。
+要求 API Server 可访问其 Service，且 Metrics Server 能访问各节点 kubelet。
+配置项：副本数、是否验证 kubelet TLS，以及可选 Helm values。
+默认验证 TLS；只有使用自签名证书的测试集群才考虑跳过验证。
+EOF
+      ;;
+    2) cat <<'EOF'
+cert-manager 自动申请、保存和续期应用 TLS 证书。
+此选项安装控制器、webhook 和 CRD；申请证书还需创建 Issuer 或 ClusterIssuer，
+并按实际 CA 或 DNS 服务商配置认证。
+配置项：可选 Helm values。此处不预设公共 CA 凭据。
+EOF
+      ;;
+    3) cat <<'EOF'
+kube-prometheus-stack 安装 Prometheus、Alertmanager、Grafana、exporter、
+仪表盘和告警规则，用于集群指标监控、告警及可视化。
+配置项：数据保留时间、可选 StorageClass 和 PVC 容量、Grafana 管理员密码、
+可选 Helm values。未选择 StorageClass 时使用临时存储，Pod 重建会丢失数据。
+升级已有 release 时默认保留已有 values。
+EOF
+      ;;
+    4) cat <<'EOF'
+Loki 保存可检索的日志；Alloy 采集并转发 Kubernetes 日志。
+生产环境需要规划 Loki 的对象存储。
+必须提供两份 values：Loki 存储和部署配置，以及 Alloy 采集管道和 Loki 地址。
+此选项使用独立 Loki 与 Alloy Chart，不使用已弃用的 loki-stack。
+Loki：https://grafana.com/docs/loki/latest/setup/install/helm/
+Alloy：https://grafana.com/docs/alloy/latest/configure/kubernetes/
+EOF
+      ;;
+    5) cat <<'EOF'
+Argo CD 从 Git 或 Helm 来源同步 Kubernetes 应用，实现 GitOps 持续交付。
+默认安装控制器和内部 ClusterIP 形式的 UI Service。
+安装后需配置代码仓库、RBAC 和外部访问方式。
+配置项：可选 Helm values。此处不收集 Git 登录凭据。
+EOF
+      ;;
+    6) cat <<'EOF'
+External Secrets Operator 从外部密钥服务同步数据到 Kubernetes Secret。
+此选项仅安装控制器；安装后需创建 SecretStore 或 ClusterSecretStore，
+并配置对应服务商的认证信息。
+配置项：可选 Helm values。服务商由用户自行确定。
+EOF
+      ;;
+    7) cat <<'EOF'
+ExternalDNS 根据 Kubernetes Service 和 Ingress 自动维护 DNS 记录。
+安装 Gateway API CRD 后，可同时监听 HTTPRoute。
+需要 DNS 服务商、管理域名范围、唯一 TXT 所有者 ID 和服务商认证。
+配置项：服务商、域名后缀、所有者 ID、是否监听 HTTPRoute，
+以及必须提供的服务商凭据或工作负载身份 values 文件。
+默认策略为 upsert-only，仅新增和更新，不自动删除记录。
+Chart：https://github.com/kubernetes-sigs/external-dns/tree/master/charts/external-dns
+EOF
+      ;;
+    8) cat <<'EOF'
+Velero 备份 Kubernetes 资源，并配合合适的机制备份持久卷数据。
+仍需另行安排 etcd 定时快照。
+配置项：必须提供服务商专用 values 文件，包含备份位置、存储桶、
+凭据或工作负载身份，以及服务商插件；存储服务由用户配置。
+Chart：https://github.com/vmware-tanzu/helm-charts/tree/main/charts/velero
+EOF
+      ;;
+    9) cat <<'EOF'
+NFS CSI 在已有 NFS 导出目录下创建子目录，为 PVC 动态供应存储。
+NFS 服务器须预先存在，并能被所有 Kubernetes 节点访问。
+配置项：NFS 服务器、导出路径、StorageClass 名称和回收策略。
+Retain 保留数据，Delete 删除动态供应的目录；默认 Retain。
+此选项不会自动将该 StorageClass 设置为集群默认值。
+EOF
+      ;;
+    10) cat <<'EOF'
+Envoy Gateway 实现 Gateway API，用于应用 HTTP/TCP 请求路由。
+首次安装时，其 Helm Chart 安装 Gateway API CRD。
+安装后需创建 Gateway 和 Route，并配置 LoadBalancer 或其他外部入口。
+应用入口与 lb1/lb2 上 Kubernetes API 使用的 VIP 分别配置。
+配置项：Chart 版本和可选 Helm values。
+如已有其他安装方式创建的 Gateway API CRD，需先检查所有者和版本兼容性。
+EOF
+      ;;
+    11) cat <<'EOF'
+Kyverno 通过 Kubernetes 策略验证、修改和生成资源。
+安装控制器后，还需按业务需要添加策略。
+建议从审计和告警模式开始，再逐步启用强制执行规则。
+配置项：可选 Helm values。
+EOF
+      ;;
+    12) cat <<'EOF'
+MetalLB 为裸机或 Proxmox 环境的 LoadBalancer Service 分配外部 IP。
+此选项使用 Layer 2 广播，需要在本地网络预留独立地址范围。
+地址范围必须排除节点 IP、DHCP 分配地址和 Kubernetes API VIP。
+云 VPC 通常应使用云平台自身的负载均衡。
+配置项：IPv4 地址范围、地址池名称和可选 Helm values。
+EOF
+      ;;
+    13) cat <<'EOF'
+KEDA 根据消息队列、指标等事件来源扩缩容 Deployment 或 Job。
+此选项安装控制器和 CRD；安装后需创建 ScaledObject 或 ScaledJob，
+并按事件来源配置认证。
+配置项：可选 Helm values。
+EOF
+      ;;
+    14) cat <<'EOF'
+Traefik 控制器处理标准 Kubernetes Ingress 资源。
+业务 Ingress 使用 spec.ingressClassName: traefik；此选项启用 Ingress provider。
+社区 ingress-nginx 已于 2026 年 3 月退役；迁移时须检查 nginx 注解和行为差异。
+配置项：控制器副本数、Service 类型和可选 Helm values。
+默认 NodePort，需允许访问分配的节点端口；LoadBalancer 需 MetalLB 或云负载均衡；
+ClusterIP 仅提供集群内访问。不会复用 Kubernetes API VIP，也不自动设为默认 IngressClass。
+EOF
+      ;;
+  esac
+}
+
+install_selected() {
+  local choice="$1" replicas retention storage_class size grafana_size alert_size password pass_file
+  local loki_values alloy_values provider domain owner velero_values nfs_server nfs_path sc reclaim password_generated
+  local version existing_crd pool_range pool_name current sources service_type
+  EXTRA_VALUES=()
+  case "$choice" in
+    1)
+      prepare_release metrics-server kube-system || return 0
+      replicas="$(ask 'Metrics Server replicas (1-3)' 2)"
+      [[ "$replicas" =~ ^[123]$ ]] || die 'Replicas must be 1, 2, or 3.'
+      if yes_no 'Allow insecure kubelet TLS (test clusters only)?' no; then
+        EXTRA_VALUES+=(--set 'args[0]=--kubelet-insecure-tls')
+      fi
+      optional_values_arg
+      install_chart metrics-server https://kubernetes-sigs.github.io/metrics-server/ \
+        metrics-server/metrics-server metrics-server kube-system \
+        --set "replicas=$replicas" "${EXTRA_VALUES[@]}"
+      ;;
+    2)
+      prepare_release cert-manager cert-manager || return 0
+      optional_values_arg
+      install_chart jetstack https://charts.jetstack.io jetstack/cert-manager \
+        cert-manager cert-manager --set crds.enabled=true "${EXTRA_VALUES[@]}"
+      ui_printf 'Next: create an Issuer or ClusterIssuer before requesting certificates.\n'
+      ;;
+    3)
+      prepare_release kube-prometheus-stack monitoring || return 0
+      if [ "$EXISTING" -eq 0 ]; then
+        password_generated=0
+        retention="$(ask 'Prometheus retention (for example 15d)' 15d)"
+        [[ "$retention" =~ ^[1-9][0-9]*[dhw]$ ]] || die 'Retention must look like 15d, 2w, or 24h.'
+        storage_class="$(ask 'StorageClass for monitoring PVCs (none for ephemeral)' none)"
+        pass_file="$TMP_DIR/grafana-password"
+        if yes_no 'Generate a strong Grafana admin password?' yes; then
+          command -v openssl >/dev/null || die 'openssl is required to generate a password.'
+          password="$(openssl rand -hex 24)" || die 'Password generation failed.'
+          printf '%s' "$password" > "$pass_file"
+          unset password
+          password_generated=1
+        else
+          read -r -s -p "$(ui_text 'Grafana admin password (hidden): ')" password; printf '\n'
+          [ "${#password}" -ge 16 ] || die 'Grafana password must be at least 16 characters.'
+          printf '%s' "$password" > "$pass_file"
+          unset password
+        fi
+        cat > "$TMP_DIR/monitoring.yaml" <<EOF
+prometheus:
+  prometheusSpec:
+    retention: "$retention"
+EOF
+        if [ "$storage_class" != none ]; then
+          valid_dns "$storage_class" || die 'Invalid StorageClass name.'
+          kubectl get storageclass "$storage_class" >/dev/null || die 'StorageClass %s does not exist.' "$storage_class"
+          size="$(ask 'Prometheus PVC size' 30Gi)"
+          grafana_size="$(ask 'Grafana PVC size' 5Gi)"
+          alert_size="$(ask 'Alertmanager PVC size' 5Gi)"
+          for version in "$size" "$grafana_size" "$alert_size"; do [[ "$version" =~ ^[1-9][0-9]*Gi$ ]] || die 'PVC size must look like 30Gi.'; done
+          cat >> "$TMP_DIR/monitoring.yaml" <<EOF
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: "$storage_class"
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: "$size"
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: "$storage_class"
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: "$alert_size"
+grafana:
+  persistence:
+    enabled: true
+    storageClassName: "$storage_class"
+    size: "$grafana_size"
+EOF
+        else
+          yes_no 'Monitoring data will be ephemeral. Continue?' no || return 0
+        fi
+        EXTRA_VALUES=(-f "$TMP_DIR/monitoring.yaml" --set-file "grafana.adminPassword=$pass_file")
+      fi
+      optional_values_arg
+      install_chart prometheus-community https://prometheus-community.github.io/helm-charts \
+        prometheus-community/kube-prometheus-stack kube-prometheus-stack monitoring \
+        "${EXTRA_VALUES[@]}"
+      if [ "${password_generated:-0}" -eq 1 ]; then
+        ui_printf 'Generated Grafana admin password (record it securely): %s\n' "$(cat "$pass_file")"
+      fi
+      ui_printf 'Grafana admin password is also stored in its Kubernetes Secret.\n'
+      ;;
+    4)
+      if prepare_release loki logging; then
+        loki_values="$(values_file 'Loki storage/deployment Helm values' yes)"
+        install_chart grafana-community https://grafana-community.github.io/helm-charts \
+          grafana-community/loki loki logging -f "$loki_values"
+      fi
+      if prepare_release alloy logging; then
+        alloy_values="$(values_file 'Alloy log collection Helm values' yes)"
+        install_chart grafana https://grafana.github.io/helm-charts \
+          grafana/alloy alloy logging -f "$alloy_values"
+      fi
+      ;;
+    5)
+      prepare_release argocd argocd || return 0
+      optional_values_arg
+      install_chart argo https://argoproj.github.io/argo-helm argo/argo-cd argocd argocd \
+        "${EXTRA_VALUES[@]}"
+      ;;
+    6)
+      prepare_release external-secrets external-secrets || return 0
+      optional_values_arg
+      install_chart external-secrets https://charts.external-secrets.io \
+        external-secrets/external-secrets external-secrets external-secrets \
+        "${EXTRA_VALUES[@]}"
+      ui_printf 'Next: create a provider-specific SecretStore or ClusterSecretStore.\n'
+      ;;
+    7)
+      prepare_release external-dns external-dns || return 0
+      provider="$(ask 'DNS provider (for example alibabacloud, aws, cloudflare)' '')"
+      valid_dns "$provider" || die 'Invalid provider name.'
+      domain="$(ask 'Managed DNS domain suffix' '')"
+      valid_dns "$domain" || die 'Invalid domain suffix.'
+      owner="$(ask 'Unique TXT owner ID for this cluster' '')"
+      valid_dns "$owner" || die 'Invalid TXT owner ID.'
+      sources='{service,ingress}'
+      if yes_no 'Also watch Gateway API HTTPRoutes?' no; then
+        kubectl get crd httproutes.gateway.networking.k8s.io >/dev/null || die 'Install Gateway API CRDs before enabling HTTPRoute DNS source.'
+        sources='{service,ingress,gateway-httproute}'
+      fi
+      velero_values="$(values_file 'Provider credentials/workload identity Helm values' yes)"
+      install_chart external-dns https://kubernetes-sigs.github.io/external-dns/ \
+        external-dns/external-dns external-dns external-dns \
+        -f "$velero_values" --set-string "provider.name=$provider" \
+        --set-string "domainFilters[0]=$domain" --set-string "txtOwnerId=$owner" \
+        --set "sources=$sources" --set policy=upsert-only
+      ;;
+    8)
+      prepare_release velero velero || return 0
+      velero_values="$(values_file 'Velero provider/storage/plugin Helm values' yes)"
+      install_chart vmware-tanzu https://vmware-tanzu.github.io/helm-charts \
+        vmware-tanzu/velero velero velero -f "$velero_values"
+      ui_printf 'Next: create a backup schedule and test a restore; keep etcd snapshots separately.\n'
+      ;;
+    9)
+      prepare_release csi-driver-nfs kube-system || return 0
+      nfs_server="$(ask 'NFS server DNS name or IPv4' '')"
+      valid_dns "$nfs_server" || die 'Invalid NFS server name.'
+      nfs_path="$(ask 'NFS exported absolute path' /exports/k8s)"
+      [[ "$nfs_path" =~ ^/[a-zA-Z0-9._/-]+$ ]] || die 'Invalid NFS export path.'
+      sc="$(ask 'StorageClass name' nfs-csi)"
+      valid_dns "$sc" || die 'Invalid StorageClass name.'
+      reclaim="$(ask 'PV reclaim policy (Retain/Delete)' Retain)"
+      [[ "$reclaim" = Retain || "$reclaim" = Delete ]] || die 'Reclaim policy must be Retain or Delete.'
+      install_chart csi-driver-nfs https://kubernetes-csi.github.io/csi-driver-nfs \
+        csi-driver-nfs/csi-driver-nfs csi-driver-nfs kube-system
+      if kubectl get storageclass "$sc" >/dev/null 2>&1; then
+        current="$(kubectl get storageclass "$sc" -o jsonpath='{.provisioner}{" "}{.parameters.server}{" "}{.parameters.share}{" "}{.reclaimPolicy}')"
+        [ "$current" = "nfs.csi.k8s.io $nfs_server $nfs_path $reclaim" ] || die 'Existing StorageClass %s uses %s; it was not changed.' "$sc" "$current"
+        ui_printf 'StorageClass %s already points to the requested NFS export.\n' "$sc"
+      else
+        kubectl apply -f - <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: $sc
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: $nfs_server
+  share: $nfs_path
+reclaimPolicy: $reclaim
+volumeBindingMode: Immediate
+EOF
+      fi
+      ;;
+    10)
+      existing_crd=0
+      kubectl get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1 && existing_crd=1
+      if [ "$existing_crd" -eq 1 ] && ! release_present envoy-gateway envoy-gateway-system; then
+        die 'Gateway API CRDs already exist outside this release; check their owner/version before installing Envoy Gateway.'
+      fi
+      prepare_release envoy-gateway envoy-gateway-system || return 0
+      version="$(ask 'Envoy Gateway chart version' v1.9.2)"
+      valid_version "$version" || die 'Invalid Envoy Gateway version.'
+      optional_values_arg
+      if [ "$EXISTING" -eq 1 ]; then EXTRA_VALUES+=(--reuse-values); fi
+      helm upgrade --install envoy-gateway oci://docker.io/envoyproxy/gateway-helm \
+        --version "$version" -n envoy-gateway-system --create-namespace \
+        --wait --atomic --timeout 15m "${EXTRA_VALUES[@]}"
+      kubectl wait -n envoy-gateway-system deployment/envoy-gateway \
+        --for=condition=Available --timeout=5m
+      ui_printf 'Next: create GatewayClass, Gateway, routes, and external traffic exposure.\n'
+      ;;
+    11)
+      prepare_release kyverno kyverno || return 0
+      optional_values_arg
+      install_chart kyverno https://kyverno.github.io/kyverno/ kyverno/kyverno \
+        kyverno kyverno "${EXTRA_VALUES[@]}"
+      ui_printf 'Next: add policies gradually, starting with audit/warn.\n'
+      ;;
+    12)
+      prepare_release metallb metallb-system || return 0
+      pool_range="$(ask 'Unused IPv4 pool (CIDR or first-last)' '')"
+      valid_ipv4_pool "$pool_range" || die 'Enter a valid IPv4 CIDR or first-last range.'
+      pool_name="$(ask 'MetalLB pool name' external-services)"
+      valid_dns "$pool_name" || die 'Invalid pool name.'
+      ui_printf 'Pool: %s. Verify it excludes DHCP leases, node IPs, and the API VIP.\n' "$pool_range"
+      yes_no 'Is this range reserved for Kubernetes LoadBalancer Services?' no || return 0
+      optional_values_arg
+      install_chart metallb https://metallb.github.io/metallb metallb/metallb \
+        metallb metallb-system "${EXTRA_VALUES[@]}"
+      kubectl wait --for=condition=Established crd/ipaddresspools.metallb.io \
+        --timeout=2m
+      if kubectl get ipaddresspool "$pool_name" -n metallb-system >/dev/null 2>&1; then
+        current="$(kubectl get ipaddresspool "$pool_name" -n metallb-system -o jsonpath='{.spec.addresses[*]}')"
+        [ "$current" = "$pool_range" ] || die 'Pool %s already has range %s; it was not changed.' "$pool_name" "$current"
+      else
+        kubectl apply -f - <<EOF
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: $pool_name
+  namespace: metallb-system
+spec:
+  addresses:
+    - $pool_range
+EOF
+      fi
+      if kubectl get l2advertisement "$pool_name" -n metallb-system >/dev/null 2>&1; then
+        current="$(kubectl get l2advertisement "$pool_name" -n metallb-system -o jsonpath='{.spec.ipAddressPools[*]}')"
+        [ "$current" = "$pool_name" ] || die 'L2Advertisement %s selects %s; it was not changed.' "$pool_name" "$current"
+      else
+        kubectl apply -f - <<EOF
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: $pool_name
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - $pool_name
+EOF
+      fi
+      ui_printf 'MetalLB Layer 2 pool %s is configured.\n' "$pool_name"
+      ;;
+    13)
+      prepare_release keda keda || return 0
+      optional_values_arg
+      install_chart kedacore https://kedacore.github.io/charts kedacore/keda \
+        keda keda "${EXTRA_VALUES[@]}"
+      ui_printf 'Next: define a workload ScaledObject or ScaledJob and its authentication.\n'
+      ;;
+    14)
+      if ! release_present traefik traefik && kubectl get ingressclass traefik >/dev/null 2>&1; then
+        die 'IngressClass traefik already exists outside this release; inspect its owner before installing.'
+      fi
+      prepare_release traefik traefik || return 0
+      replicas="$(ask 'Traefik controller replicas' 2)"
+      [[ "$replicas" =~ ^[1-9][0-9]*$ ]] || die 'Replicas must be a positive integer.'
+      service_type="$(ask 'Traefik Service type (NodePort/LoadBalancer/ClusterIP)' NodePort)"
+      case "$service_type" in NodePort|LoadBalancer|ClusterIP) ;; *) die 'Invalid Service type.' ;; esac
+      if [ "$service_type" = LoadBalancer ]; then
+        ui_printf '[WARN] A LoadBalancer provider must be configured before this Service receives an external IP.\n'
+      fi
+      optional_values_arg
+      install_chart traefik https://traefik.github.io/charts traefik/traefik \
+        traefik traefik --set providers.kubernetesIngress.enabled=true \
+        --set ingressClass.isDefaultClass=false --set "deployment.replicas=$replicas" \
+        --set "service.spec.type=$service_type" "${EXTRA_VALUES[@]}"
+      kubectl get service -n traefik
+      ui_printf 'Next: create an Ingress with spec.ingressClassName: traefik and configure external traffic to the Service.\n'
+      ;;
+  esac
+}
+
+show_menu() {
+  if [ "$UI_LANG" = zh ]; then
+  cat <<'EOF'
+
+================ Atlas KubeKit | Kubernetes 插件菜单 ================
+ 1) Metrics Server        - CPU/内存指标、kubectl top 和 HPA
+ 2) cert-manager          - 自动申请和续期应用 TLS 证书
+ 3) Prometheus stack      - 指标监控、告警、仪表盘和 Grafana
+ 4) Loki + Alloy          - 集中存储日志及日志采集
+ 5) Argo CD               - 基于 GitOps 的应用持续交付
+ 6) External Secrets      - 从外部密钥服务同步 Secret
+ 7) ExternalDNS           - 自动同步 Service/Ingress/HTTPRoute 的 DNS
+ 8) Velero                - Kubernetes 资源和持久卷备份
+ 9) NFS CSI               - 基于已有 NFS 服务动态供应 PVC
+10) Envoy Gateway         - 基于 Gateway API 的应用请求路由
+11) Kyverno               - Kubernetes 资源策略引擎
+12) MetalLB               - 裸机 LoadBalancer 外部 IP（Layer 2）
+13) KEDA                  - 根据事件自动扩缩容工作负载
+14) Traefik Ingress       - 标准 Kubernetes Ingress 控制器
+ L) Language / 语言       - 切换 English / 中文
+ 0) 退出
+======================================================
+EOF
+  else
+  cat <<'EOF'
+
+================ Atlas KubeKit | Kubernetes add-on menu ================
+ 1) Metrics Server        - CPU/memory API for kubectl top and HPA
+ 2) cert-manager          - issue and renew application TLS certificates
+ 3) Prometheus stack      - metrics, alerts, dashboards, and Grafana
+ 4) Loki + Alloy          - centralized log storage and collection
+ 5) Argo CD               - GitOps application delivery
+ 6) External Secrets      - sync secrets from an external secret manager
+ 7) ExternalDNS           - synchronize Service/Ingress/HTTPRoute DNS
+ 8) Velero                - Kubernetes resource and volume backups
+ 9) NFS CSI               - dynamic PVCs from an existing NFS server
+10) Envoy Gateway         - Gateway API application traffic controller
+11) Kyverno               - Kubernetes policy engine
+12) MetalLB               - bare-metal LoadBalancer IPs (Layer 2)
+13) KEDA                  - event-driven workload autoscaling
+14) Traefik Ingress       - controller for standard Kubernetes Ingress
+ L) Language              - switch English / Chinese
+ 0) Exit
+=========================================================
+EOF
+  fi
+}
+
+while true; do
+  show_menu
+  read -r -p "$(ui_text 'Select an add-on number (L to change language): ')" choice || exit 0
+  case "$choice" in
+    0) exit 0;;
+    l|L) select_language || exit 0;;
+    1|2|3|4|5|6|7|8|9|10|11|12|13|14)
+      ui_printf '\n--- Add-on details ---\n'
+      description "$choice"
+      if yes_no 'Continue to installation and configuration?' no; then
+        install_selected "$choice"
+      else
+        ui_printf 'Installation cancelled for this add-on.\n'
+      fi
+      ;;
+    *) ui_printf '[WARN] Select a number from 0 to 14, or L to change language.\n';;
+  esac
+done

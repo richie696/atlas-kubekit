@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Atlas KubeKit | By Atlas Richie
+#
+# init-cluster.sh —— 在第一个 control plane (cp1) 上初始化集群
+#
+# 前置条件（脚本会逐条检查，不满足就停）：
+#   1. lb1 的 HAProxy 已部署，VIP 可达
+#   2. etcd 存储位置与阶段二选盘计划一致；无独立盘时检查系统盘余量
+#   3. containerd 的 cgroup driver 已是 systemd
+#   4. kubeadm/kubelet/kubectl 已装且版本一致
+#
+# 用法：
+#   sudo bash init-cluster.sh                       # 参数取默认值
+#   sudo bash init-cluster.sh --dry-run             # 只做检查，不执行 init
+#
+# ⚠️ 一次性操作。ControlPlaneEndpoint 会写入集群配置，事后更改需要专项迁移。
+# ⚠️ --upload-certs 生成的 certificate-key 只有 2 小时有效期。
+
+set -euo pipefail
+
+red()  { printf '\033[31m%s\033[0m\n' "$*"; }
+grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
+inf()  { printf '\033[36m==> %s\033[0m\n' "$*"; }
+warn() { printf '\033[33m[WARN] %s\033[0m\n' "$*"; }
+die()  { printf '\033[31m[ERROR] %s\033[0m\n' "$*"; exit 1; }
+pass() { printf '  \033[32mOK\033[0m %s\n' "$*"; }
+hdr()  { printf '\n\033[1;36m===== %s =====\033[0m\n' "$*"; }
+
+# ============================================================== 参数
+VIP="${VIP:-10.20.1.9}"
+API_PORT="${API_PORT:-6443}"
+IFACE="${IFACE:-enp6s18}"
+CP1="${CP1:-10.20.1.22}"
+POD_CIDR="${POD_CIDR:-10.244.0.0/16}"
+SVC_CIDR="${SVC_CIDR:-10.96.0.0/12}"
+K8S_VERSION_ARG="${K8S_VERSION_ARG:-}"     # 留空 = 用 kubeadm 二进制自带版本
+ETCD_MOUNT="/var/lib/etcd"
+DATA_DEVICE="${DATA_DEVICE:-auto}"
+DRY_RUN=0
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
+[ "$(id -u)" -eq 0 ] || die "Run as root"
+command -v kubeadm >/dev/null 2>&1 || die "kubeadm not found; run setup-k8s-node.sh first"
+
+SELF_IP="$(ip -o -4 addr show "$IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1 || true)"
+
+grn "============================================================"
+grn " Cluster initialization (cp1)"
+grn "============================================================"
+printf '  Local IP       : %s\n' "$SELF_IP"
+printf '  Endpoint (VIP) : %s:%s\n' "$VIP" "$API_PORT"
+printf '  Pod CIDR       : %s\n' "$POD_CIDR"
+printf '  Service CIDR   : %s\n' "$SVC_CIDR"
+grn "============================================================"
+
+# ============================================================== 1. 前置检查
+hdr "1. Preflight checks"
+
+# 1.1 这台必须是 cp1
+[ "$SELF_IP" = "$CP1" ] || die "Local IP $SELF_IP does not match cp1 IP $CP1"
+[ "$(hostname)" = "cp1" ] || die "Hostname is $(hostname); expected cp1"
+
+# 1.2 按计划检查 etcd 存储位置。已经写入数据后不能切换挂载方式。
+case "$DATA_DEVICE" in
+  auto|none) ;;
+  /dev/*) [[ "$DATA_DEVICE" =~ ^/dev/[a-zA-Z0-9._/-]+$ ]] || die "Invalid DATA_DEVICE=$DATA_DEVICE" ;;
+  *) die "DATA_DEVICE must be none, auto, or an absolute /dev/... path" ;;
+esac
+if mountpoint -q "$ETCD_MOUNT"; then
+  [ "$DATA_DEVICE" != none ] || die "DATA_DEVICE=none conflicts with the existing $ETCD_MOUNT mount"
+  ETSRC="$(findmnt -no SOURCE "$ETCD_MOUNT")"
+  ROOT_SRC="$(findmnt -no SOURCE /)"
+  # lsblk ancestors may include Unicode tree glyphs; keep only device-name characters.
+  disk_of() { lsblk -sno NAME "$1" 2>/dev/null | sed 's/[^A-Za-z0-9._-]//g' | sed '/^$/d' | tail -n1; }
+  ROOT_DISK="$(disk_of "$ROOT_SRC")"
+  ETCD_DISK="$(disk_of "$ETSRC")"
+  [ -n "$ROOT_DISK" ] && [ -n "$ETCD_DISK" ] || die "Cannot resolve root or etcd device chain"
+  [ "$ETCD_DISK" != "$ROOT_DISK" ] || die "etcd and root share the same disk ($ROOT_DISK)"
+  if [[ "$DATA_DEVICE" == /dev/* ]]; then
+    [ -b "$DATA_DEVICE" ] || die "Selected data disk is missing: $DATA_DEVICE"
+    [ "$(disk_of "$(readlink -f "$DATA_DEVICE")")" = "$ETCD_DISK" ] || die "Mounted etcd disk differs from DATA_DEVICE=$DATA_DEVICE"
+  fi
+  pass "$ETCD_MOUNT is mounted on a separate disk ($ETSRC)"
+else
+  [[ "$DATA_DEVICE" == none || "$DATA_DEVICE" == auto ]] || die "Selected data disk $DATA_DEVICE is not mounted at $ETCD_MOUNT"
+  if awk -v mp="$ETCD_MOUNT" '$1 !~ /^#/ && $2 == mp {found=1} END {exit !found}' /etc/fstab; then
+    die "$ETCD_MOUNT has an fstab entry but is not mounted; mounting it later would hide etcd data"
+  fi
+  ROOT_FREE_KB="$(df -Pk / | awk 'NR==2 {print $4}')"
+  [ -n "$ROOT_FREE_KB" ] && [ "$ROOT_FREE_KB" -ge 10485760 ] || die "At least 10 GiB of free system disk space is required for etcd without a separate disk"
+  pass "No separate etcd disk; $ETCD_MOUNT will use the system filesystem"
+fi
+
+# 1.4 containerd cgroup driver
+if [ -f /etc/containerd/config.toml ]; then
+  BLK="$(awk '/runtimes\.runc\.options\]/{f=1;next} /^[[:space:]]*\[/{f=0} f' /etc/containerd/config.toml | grep -c 'SystemdCgroup[[:space:]]*=[[:space:]]*true' || true)"
+  [ "$BLK" -ge 1 ] && pass "containerd SystemdCgroup=true" \
+    || die "containerd SystemdCgroup is not true; rerun the base setup stage"
+fi
+
+# 1.5 VIP 连通性
+inf "Checking VIP $VIP:$API_PORT"
+if timeout 3 bash -c "cat < /dev/null > /dev/tcp/${VIP}/${API_PORT}" 2>/dev/null; then
+  pass "VIP is reachable"
+else
+  die "VIP is unreachable; check HAProxy, Keepalived, and firewall on the load balancers"
+fi
+
+# 1.6 版本
+KV="$(kubeadm version -o short 2>/dev/null || echo unknown)"
+pass "kubeadm version: $KV"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  hdr "Dry run"
+  grn "All checks passed. No changes made. Remove --dry-run to initialize."
+  exit 0
+fi
+
+# ============================================================== 2. 幂等保护
+if [ -f /etc/kubernetes/admin.conf ]; then
+  die "Control plane config already exists at /etc/kubernetes/admin.conf; diagnose API issues before another init"
+fi
+
+# ============================================================== 3. kubeadm init
+hdr "2. kubeadm init"
+
+# Service CIDR 没有对应的 CLI flag，只能通过配置文件里的
+# ClusterConfiguration.networking.serviceSubnet 设置。
+# （官方 HA 文档原话：只有 pod CIDR 有 flag --pod-network-cidr，
+#   "or if you are using a kubeadm configuration file set the podSubnet field"
+#   —— serviceSubnet 同理，只能走配置文件。）
+# 所以这里改用 v1beta4 配置文件，两个网段都显式写清楚，不靠默认值。
+KUBECONFIG_INIT="/root/kubeadm-init.yaml"
+cat > "$KUBECONFIG_INIT" <<EOF
+# 由 init-cluster.sh 生成于 $(date -Is)
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: ${CP1}
+  bindPort: ${API_PORT}
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+  kubeletExtraArgs:
+    - name: node-ip
+      value: ${CP1}
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+controlPlaneEndpoint: ${VIP}:${API_PORT}
+networking:
+  podSubnet: ${POD_CIDR}
+  serviceSubnet: ${SVC_CIDR}
+  dnsDomain: cluster.local
+EOF
+[ -n "$K8S_VERSION_ARG" ] && sed -i "/^kind: ClusterConfiguration$/a kubernetesVersion: ${K8S_VERSION_ARG}" "$KUBECONFIG_INIT"
+chmod 600 "$KUBECONFIG_INIT"
+
+inf "Validating kubeadm configuration"
+# kubeadm config validate 不接受位置参数，文件路径必须走 --config
+# （官方 kubeadm config 参考：kubeadm config validate [flags] / --config string）
+kubeadm config validate --config="$KUBECONFIG_INIT" \
+  || die "kubeadm config validation failed; file: $KUBECONFIG_INIT; no changes made"
+pass "Configuration validation passed"
+
+inf "Running kubeadm init --config $KUBECONFIG_INIT --upload-certs"
+install -d -m 700 /root/k8s-deploy
+umask 077
+INIT_LOG=/root/k8s-deploy/kubeadm-init.log
+kubeadm init --config "$KUBECONFIG_INIT" --upload-certs > "$INIT_LOG" 2>&1 || die "kubeadm init failed; inspect $INIT_LOG and kubelet logs before recovery. No automatic reset is performed."
+
+pass "kubeadm init complete"
+
+# ============================================================== 4. kubeconfig
+hdr "3. Configure kubeconfig"
+export KUBECONFIG=/etc/kubernetes/admin.conf
+mkdir -p "$HOME/.kube"
+install -o "$(id -u)" -g "$(id -g)" -m 600 /etc/kubernetes/admin.conf "$HOME/.kube/config"
+pass "Root kubeconfig is ready at \$HOME/.kube/config"
+inf "To use kubectl: export KUBECONFIG=/etc/kubernetes/admin.conf"
+
+# ============================================================== 5. 等待并展示状态
+hdr "4. Current status"
+inf "CNI is not installed yet; CoreDNS Pending and node NotReady are expected"
+kubectl get nodes -o wide 2>/dev/null || true
+kubectl get pods -n kube-system 2>/dev/null | head -20 || true
+
+cat <<EOF
+
+$(grn "============================================================")
+$(grn " Cluster control plane initialized")
+$(grn "============================================================")
+  Endpoint : ${VIP}:${API_PORT}
+
+  The main script continues with Cilium, join credentials, and other nodes.
+  For manual setup, run install-cilium.sh and create-join-credentials.sh on cp1.
+$(grn "============================================================")
+EOF

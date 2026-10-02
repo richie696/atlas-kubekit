@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Atlas KubeKit | By Atlas Richie
+set -euo pipefail
+MIRROR="${1:-https://k8s.m.daocloud.io}"
+CFG=/etc/containerd/config.toml
+HOSTDIR=/etc/containerd/certs.d/registry.k8s.io
+HOSTS="$HOSTDIR/hosts.toml"
+[ "$(id -u)" -eq 0 ] || { echo 'Run as root' >&2; exit 1; }
+command -v containerd >/dev/null && command -v python3 >/dev/null || { echo 'containerd or python3 is missing' >&2; exit 1; }
+[ -f "$CFG" ] || { echo "Missing $CFG; run setup-k8s-node.sh first" >&2; exit 1; }
+case "$MIRROR" in https://*) ;; *) echo 'Mirror URL must use https://' >&2; exit 1;; esac
+
+TMP_HOSTS=$(mktemp)
+TMP_CFG=$(mktemp)
+trap 'rm -f "$TMP_HOSTS" "$TMP_CFG"' EXIT
+cat > "$TMP_HOSTS" <<EOF
+server = "https://registry.k8s.io"
+
+[host."$MIRROR"]
+  capabilities = ["pull", "resolve"]
+EOF
+
+python3 - "$CFG" "$TMP_CFG" <<'PY'
+import pathlib, re, sys
+src, dst = map(pathlib.Path, sys.argv[1:])
+lines = src.read_text().splitlines(keepends=True)
+targets = {
+    "[plugins.'io.containerd.cri.v1.images'.registry]",
+    '[plugins."io.containerd.cri.v1.images".registry]',
+    '[plugins."io.containerd.grpc.v1.cri".registry]',
+}
+start = next((i for i, line in enumerate(lines) if line.strip() in targets), None)
+if start is None:
+    raise SystemExit('Unrecognized containerd CRI registry section; original configuration preserved')
+end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith('[')), len(lines))
+indices = [i for i in range(start + 1, end) if re.match(r'\s*config_path\s*=', lines[i])]
+if len(indices) > 1:
+    raise SystemExit('Duplicate config_path in registry section; original configuration preserved')
+wanted = "      config_path = '/etc/containerd/certs.d'\n"
+if indices:
+    lines[indices[0]] = wanted
+else:
+    lines.insert(start + 1, wanted)
+dst.write_text(''.join(lines))
+PY
+
+changed=0
+if ! cmp -s "$TMP_CFG" "$CFG"; then
+  cp -a "$CFG" "$CFG.bak.$(date +%Y%m%d%H%M%S)"
+  cat "$TMP_CFG" > "$CFG"
+  changed=1
+fi
+mkdir -p "$HOSTDIR"
+if ! cmp -s "$TMP_HOSTS" "$HOSTS" 2>/dev/null; then
+  install -m 644 "$TMP_HOSTS" "$HOSTS"
+  changed=1
+fi
+if [ "$changed" -eq 1 ]; then
+  systemctl restart containerd
+fi
+systemctl is-active --quiet containerd || { echo 'containerd is not active' >&2; exit 1; }
+containerd config dump | grep -Fq '/etc/containerd/certs.d' || { echo 'containerd effective configuration does not enable certs.d' >&2; exit 1; }
+if [ "$changed" -eq 1 ]; then
+  echo "registry.k8s.io mirror updated: $MIRROR"
+else
+  echo "registry.k8s.io mirror already configured; restart skipped: $MIRROR"
+fi

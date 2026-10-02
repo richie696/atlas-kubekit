@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Atlas KubeKit | By Atlas Richie
+#
+# setup-lb.sh —— 在 lb1/lb2 上部署 kube-apiserver 负载均衡
+#
+#   HAProxy   : TCP round-robin across registered control-plane nodes
+#   Keepalived: VRRP VIP failover across registered load balancers
+#
+# Usage: invoked by 02-deploy-cluster.sh with CP_BACKENDS and LB_PRIORITY.
+
+set -euo pipefail
+
+red()  { printf '\033[31m%s\033[0m\n' "$*"; }
+grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
+inf()  { printf '\033[36m==> %s\033[0m\n' "$*"; }
+warn() { printf '\033[33m[WARN] %s\033[0m\n' "$*"; }
+die()  { printf '\033[31m[ERROR] %s\033[0m\n' "$*"; exit 1; }
+pass() { printf '  \033[32mOK\033[0m %s\n' "$*"; }
+
+# ============================================================== 参数
+VIP="${VIP:-10.20.1.9}"
+API_PORT="${API_PORT:-6443}"
+IFACE="${IFACE:-enp6s18}"
+VRRP_ID="${VRRP_ID:-51}"
+# Every LB must use the same VRRP password to avoid competing VIP owners.
+AUTH_PASS="${AUTH_PASS:-}"
+CP1="${CP1:-10.20.1.22}"
+CP2="${CP2:-10.20.1.23}"
+CP3="${CP3:-10.20.1.24}"
+CP_BACKENDS="${CP_BACKENDS:-cp1=$CP1 cp2=$CP2 cp3=$CP3}"
+LB_PRIORITY="${LB_PRIORITY:-}"
+MODE="master"
+
+SELF_IP=""
+for a in "$@"; do
+  case "$a" in
+    --slave) MODE="slave" ;;
+    --master) MODE="master" ;;
+    --*) die "Unknown argument: $a (use --slave or --master)" ;;
+    *) [ -z "$SELF_IP" ] || die "Specify only one local IP"; SELF_IP="$a" ;;
+  esac
+done
+
+if [ -z "$SELF_IP" ]; then
+  SELF_IP="$(ip -o -4 addr show "$IFACE" | awk '{print $4}' | cut -d/ -f1 | head -1)"
+fi
+[ -n "$SELF_IP" ] || die "Cannot detect local IP; run: sudo bash $0 <local-IP>"
+[[ "$VRRP_ID" =~ ^[0-9]+$ ]] && [ "$VRRP_ID" -ge 1 ] && [ "$VRRP_ID" -le 255 ] || die "VRRP_ID must be an integer from 1 to 255"
+[[ "$AUTH_PASS" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || die "VRRP auth_pass must contain 1-32 letters, digits, or ._- characters"
+
+if [ -n "$LB_PRIORITY" ]; then PRIORITY="$LB_PRIORITY"; elif [ "$MODE" = master ]; then PRIORITY=150; else PRIORITY=100; fi
+[[ "$PRIORITY" =~ ^[0-9]+$ ]] && [ "$PRIORITY" -ge 1 ] && [ "$PRIORITY" -le 254 ] || die 'LB priority must be 1-254'
+BACKEND_NAMES=() BACKEND_IPS=()
+declare -A SEEN_BACKENDS
+for backend in $CP_BACKENDS; do
+  [[ "$backend" =~ ^(cp[1-9][0-9]*)=([0-9]{1,3}(\.[0-9]{1,3}){3})$ ]] || die "Invalid control-plane backend: $backend"
+  cp_name="${BASH_REMATCH[1]}"; cp_ip="${BASH_REMATCH[2]}"
+  [ -z "${SEEN_BACKENDS[$cp_name]:-}" ] || die "Duplicate control-plane backend: $cp_name"
+  [ "$VIP" != "$cp_ip" ] && [ "$SELF_IP" != "$cp_ip" ] || die "Backend $cp_name conflicts with VIP or local LB IP"
+  SEEN_BACKENDS[$cp_name]=1
+  BACKEND_NAMES+=("$cp_name"); BACKEND_IPS+=("$cp_ip")
+done
+[ "${#BACKEND_NAMES[@]}" -ge 1 ] || die 'At least one control-plane backend is required'
+
+[ "$(id -u)" -eq 0 ] || die "Run as root"
+export DEBIAN_FRONTEND=noninteractive
+
+grn "============================================================"
+grn " LB setup: local=$SELF_IP  VIP=$VIP  role=$MODE(priority=$PRIORITY)"
+grn " Backends: $CP_BACKENDS :$API_PORT"
+grn "============================================================"
+
+# VIP 不能等于任何一台后端，也不能等于本机
+for ip in "${BACKEND_IPS[@]}" "$SELF_IP"; do
+  [ "$VIP" != "$ip" ] || die "VIP $VIP matches a node address"
+done
+
+# ============================================================== 1. HAProxy
+inf "Installing HAProxy"
+apt-get update -qq
+apt-get install -y -qq haproxy >/dev/null
+
+inf "Generating HAProxy configuration"
+TMP_CFG="$(mktemp)"
+cat > "$TMP_CFG" <<EOF
+# 注意：不要用 haproxy 的软件重载去改 6443 前端上的连接，
+# kubelet 与 apiserver 的长连接在重载时可能短暂失败。
+
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    daemon
+    maxconn 4000
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
+
+defaults
+    log     global
+    mode    tcp
+    retries 3
+    timeout connect 10s
+    timeout client  1m
+    timeout server  1m
+    timeout queue   1m
+    option  tcplog
+
+frontend kube-apiserver
+    bind *:${API_PORT}
+    mode tcp
+    default_backend kube-apiserver-backend
+
+backend kube-apiserver-backend
+    mode tcp
+    balance roundrobin
+    # 健康检查用 TCP 探 6443。apiserver 在这个端口上会回应 TCP 握手
+    option tcp-check
+EOF
+for i in "${!BACKEND_NAMES[@]}"; do
+  printf '    server %s %s:%s check fall 3 inter 2 rise 2\n' "${BACKEND_NAMES[$i]}" "${BACKEND_IPS[$i]}" "$API_PORT" >> "$TMP_CFG"
+done
+cat >> "$TMP_CFG" <<EOF
+
+frontend stats
+    bind *:7000
+    mode http
+    stats enable
+    stats uri /
+    stats refresh 10s
+EOF
+
+inf "Validating HAProxy configuration"
+# 先校验临时文件，通过后才安装 —— 校验失败不会在 /etc 留下坏配置
+if ! haproxy -c -f "$TMP_CFG"; then
+  rm -f "$TMP_CFG"
+  die "HAProxy config is invalid; existing config and service were not changed"
+fi
+pass "Syntax validation passed"
+
+mkdir -p /run/haproxy          # stats socket 的父目录，缺了会导致启动失败
+HAPROXY_CHANGED=0
+if ! cmp -s "$TMP_CFG" /etc/haproxy/haproxy.cfg 2>/dev/null; then
+  [ ! -e /etc/haproxy/haproxy.cfg ] || cp -a /etc/haproxy/haproxy.cfg "/etc/haproxy/haproxy.cfg.bak.$(date +%Y%m%d%H%M%S)"
+  install -m 644 "$TMP_CFG" /etc/haproxy/haproxy.cfg
+  HAPROXY_CHANGED=1
+else
+  pass "HAProxy configuration is current"
+fi
+rm -f "$TMP_CFG"
+pass "Installed /etc/haproxy/haproxy.cfg"
+
+systemctl enable haproxy >/dev/null 2>&1 || true
+if [ "$HAPROXY_CHANGED" -eq 1 ] || ! systemctl is-active --quiet haproxy; then systemctl restart haproxy; fi
+sleep 1
+systemctl is-active --quiet haproxy || die "HAProxy is not running: journalctl -u haproxy -n 30 --no-pager"
+pass "HAProxy is running on port ${API_PORT}; stats: http://${SELF_IP}:7000"
+
+# ============================================================== 2. Keepalived
+inf "Installing Keepalived"
+apt-get install -y -qq keepalived psmisc >/dev/null
+
+TMP_KEEP="$(mktemp)"
+cat > "$TMP_KEEP" <<EOF
+global_defs {
+    script_user root
+    enable_script_security
+}
+
+vrrp_script check_haproxy {
+    script "/usr/bin/killall -0 haproxy"
+    interval 2
+    # Zero weight makes the VRRP instance enter FAULT if HAProxy is absent.
+    weight 0
+    fall 2
+    rise 2
+}
+
+vrrp_instance VI_KUBE_APISERVER {
+    state $(if [ "$MODE" = master ]; then printf MASTER; else printf BACKUP; fi)
+    interface ${IFACE}
+    virtual_router_id ${VRRP_ID}
+    priority ${PRIORITY}
+    advert_int 1
+
+    authentication {
+        auth_type PASS
+        auth_pass ${AUTH_PASS}
+    }
+
+    virtual_ipaddress {
+        ${VIP}
+    }
+
+    track_script {
+        check_haproxy
+    }
+}
+EOF
+
+keepalived -t -f "$TMP_KEEP" || { rm -f "$TMP_KEEP"; die "Keepalived config validation failed; existing config was not changed"; }
+KEEPALIVED_CHANGED=0
+if ! cmp -s "$TMP_KEEP" /etc/keepalived/keepalived.conf 2>/dev/null; then
+  [ ! -e /etc/keepalived/keepalived.conf ] || cp -a /etc/keepalived/keepalived.conf "/etc/keepalived/keepalived.conf.bak.$(date +%Y%m%d%H%M%S)"
+  install -m 640 "$TMP_KEEP" /etc/keepalived/keepalived.conf
+  KEEPALIVED_CHANGED=1
+else
+  pass "Keepalived configuration is current"
+fi
+rm -f "$TMP_KEEP"
+
+systemctl enable keepalived >/dev/null 2>&1 || true
+if [ "$KEEPALIVED_CHANGED" -eq 1 ] || ! systemctl is-active --quiet keepalived; then systemctl restart keepalived; fi
+sleep 2
+systemctl is-active --quiet keepalived || die "Keepalived is not running: journalctl -u keepalived -n 30 --no-pager"
+pass "Keepalived is running (role=$MODE)"
+
+# ============================================================== 3. 自检
+hdr() { printf '\n\033[1;36m===== %s =====\033[0m\n' "$*"; }
+hdr "Self-check"
+
+# 本机 VIP 是否已生效
+if ip -o -4 addr show "$IFACE" | grep -q "$VIP"; then
+  pass "VIP $VIP is present locally (MASTER)"
+else
+  pass "VIP $VIP is not local yet (BACKUP or VRRP election in progress)"
+fi
+
+# The control-plane API is not listening until kubeadm init; verify HAProxy itself here.
+inf "Checking local API port listener"
+ss -lntp 2>/dev/null | grep ":${API_PORT}" || warn "Port ${API_PORT} is not listening; check HAProxy"
+
+cat <<EOF
+
+$(grn "============================================================")
+$(grn " LB setup complete")
+$(grn "============================================================")
+  VIP for kubeadm     : ${VIP}:${API_PORT}
+  HAProxy stats       : http://${SELF_IP}:7000
+  VRRP virtual_router_id : ${VRRP_ID}
+  VRRP auth_pass     : [configured, hidden]
+  Local role         : ${MODE^^} (priority=${PRIORITY})
+
+$(red "  Use the same VRRP ID, password, and VIP on every LB:")
+$(red "    virtual_router_id = ${VRRP_ID}")
+$(red "    auth_pass         = same value on every LB (hidden)")
+$(red "    virtual_ipaddress = ${VIP}")
+$(red "    local interface   = ${IFACE} (may differ on other LBs)")
+$(red "  A mismatched auth_pass can make multiple LBs MASTER and cause an IP conflict.")
+$(red "  Each LB must have a distinct priority.")
+
+  After setting up all LBs, check which one is MASTER:
+    ip -br addr show ${IFACE} | grep ${VIP}
+
+$(red "  kubeadm controlPlaneEndpoint must be ${VIP}:${API_PORT}.")
+$(red "  Changing it later requires a separate migration.")
+
+  Next: 02-deploy-cluster.sh configures and initializes cp1.
+$(grn "============================================================")
+EOF

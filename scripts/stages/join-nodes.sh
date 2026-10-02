@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Atlas KubeKit | By Atlas Richie
+#
+# join-nodes.sh —— 把 cp2/cp3/worker 加入集群
+#
+# 用法（在目标节点内执行）：
+#   sudo bash join-nodes.sh <本机IP> cp       # 加入为 control plane
+#   sudo bash join-nodes.sh <本机IP> worker   # 加入为 worker
+#
+# 需要从 cp1 拿到的凭据（CRED_DIR，默认 /root/k8s-join）：
+#   cp-join.txt     —— control plane 用，含 --control-plane 与 --certificate-key
+#   worker-join.txt —— worker 用
+#
+# 第二阶段入口会自动传送对应凭据。
+
+set -euo pipefail
+
+red()  { printf '\033[31m%s\033[0m\n' "$*"; }
+grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
+inf()  { printf '\033[36m==> %s\033[0m\n' "$*"; }
+warn() { printf '\033[33m[WARN] %s\033[0m\n' "$*"; }
+die()  { printf '\033[31m[ERROR] %s\033[0m\n' "$*"; exit 1; }
+pass() { printf '  \033[32mOK\033[0m %s\n' "$*"; }
+hdr()  { printf '\n\033[1;36m===== %s =====\033[0m\n' "$*"; }
+
+SELF_IP="${1:-}"
+ROLE="${2:-}"
+CRED_DIR="${CRED_DIR:-/root/k8s-join}"
+VIP="${VIP:-10.20.1.9}"
+API_PORT="${API_PORT:-6443}"
+ETCD_MOUNT="/var/lib/etcd"
+DATA_DEVICE="${DATA_DEVICE:-auto}"
+
+[ "$(id -u)" -eq 0 ] || die "Run as root"
+[ -n "$SELF_IP" ] || die "Usage: $0 <local-IP> <cp|worker>"
+case "$ROLE" in
+  cp|worker) ;;
+  *) die "Usage: $0 <local-IP> <cp|worker> (received role='$ROLE')" ;;
+esac
+command -v kubeadm >/dev/null 2>&1 || die "kubeadm is missing; run setup-k8s-node.sh first"
+
+grn "============================================================"
+grn " Joining cluster: $ROLE  local IP=$SELF_IP  endpoint=$VIP:$API_PORT"
+grn "============================================================"
+
+# ============================================================== 1. 前置检查
+hdr "1. Preflight checks"
+
+# 1.1 cp 存储位置必须与阶段二选盘计划一致
+if [ "$ROLE" = "cp" ]; then
+  case "$DATA_DEVICE" in
+    auto|none) ;;
+    /dev/*) [[ "$DATA_DEVICE" =~ ^/dev/[a-zA-Z0-9._/-]+$ ]] || die "Invalid DATA_DEVICE=$DATA_DEVICE" ;;
+    *) die "DATA_DEVICE must be none, auto, or an absolute /dev/... path" ;;
+  esac
+  if mountpoint -q "$ETCD_MOUNT"; then
+    [ "$DATA_DEVICE" != none ] || die "DATA_DEVICE=none conflicts with the existing $ETCD_MOUNT mount"
+    ETSRC="$(findmnt -no SOURCE "$ETCD_MOUNT")"
+    ROOT_SRC="$(findmnt -no SOURCE /)"
+    disk_of() { lsblk -sno NAME "$1" 2>/dev/null | sed 's/[^A-Za-z0-9._-]//g' | sed '/^$/d' | tail -n1; }
+    ROOT_DISK="$(disk_of "$ROOT_SRC")"
+    ETCD_DISK="$(disk_of "$ETSRC")"
+    [ -n "$ROOT_DISK" ] && [ -n "$ETCD_DISK" ] || die "Cannot resolve root or etcd device chain"
+    [ "$ETCD_DISK" != "$ROOT_DISK" ] || die "etcd and root share the same disk ($ROOT_DISK)"
+    if [[ "$DATA_DEVICE" == /dev/* ]]; then
+      [ -b "$DATA_DEVICE" ] || die "Selected data disk is missing: $DATA_DEVICE"
+      [ "$(disk_of "$(readlink -f "$DATA_DEVICE")")" = "$ETCD_DISK" ] || die "Mounted etcd disk differs from DATA_DEVICE=$DATA_DEVICE"
+    fi
+    pass "etcd disk mounted separately ($ETSRC)"
+  else
+    [[ "$DATA_DEVICE" == none || "$DATA_DEVICE" == auto ]] || die "Selected data disk $DATA_DEVICE is not mounted at $ETCD_MOUNT"
+    if awk -v mp="$ETCD_MOUNT" '$1 !~ /^#/ && $2 == mp {found=1} END {exit !found}' /etc/fstab; then
+      die "$ETCD_MOUNT has an fstab entry but is not mounted; mounting it later would hide etcd data"
+    fi
+    ROOT_FREE_KB="$(df -Pk / | awk 'NR==2 {print $4}')"
+    [ -n "$ROOT_FREE_KB" ] && [ "$ROOT_FREE_KB" -ge 10485760 ] || die "At least 10 GiB of free system disk space is required for etcd without a separate disk"
+    pass "No separate etcd disk; $ETCD_MOUNT uses the system filesystem"
+  fi
+fi
+
+# 1.2 containerd cgroup
+if [ -f /etc/containerd/config.toml ]; then
+  BLK="$(awk '/runtimes\.runc\.options\]/{f=1;next} /^[[:space:]]*\[/{f=0} f' /etc/containerd/config.toml | grep -c 'SystemdCgroup[[:space:]]*=[[:space:]]*true' || true)"
+  [ "$BLK" -ge 1 ] && pass "containerd SystemdCgroup=true" || die "Rerun the node prerequisite stage"
+fi
+
+# 1.3 Endpoint 连通性
+inf "Checking endpoint $VIP:$API_PORT"
+if timeout 3 bash -c "cat < /dev/null > /dev/tcp/${VIP}/${API_PORT}" 2>/dev/null; then
+  pass "Endpoint is reachable"
+else
+  die "Cannot reach $VIP:$API_PORT.
+     Check HAProxy on lb1, Keepalived MASTER state, and firewall access to port 6443.
+     Do not attempt join until this endpoint is reachable."
+fi
+
+# 1.4 幂等保护
+if [ -f /etc/kubernetes/kubelet.conf ]; then
+  die "This node already joined the cluster (/etc/kubernetes/kubelet.conf exists)."
+fi
+
+# ============================================================== 2. 凭据
+hdr "2. Join credentials"
+if [ "$ROLE" = "cp" ]; then
+  CRED_FILE="${CRED_DIR}/cp-join.txt"
+else
+  CRED_FILE="${CRED_DIR}/worker-join.txt"
+fi
+[ -f "$CRED_FILE" ] || die "Join credential file $CRED_FILE is missing; rerun 02-deploy-cluster.sh."
+pass "Credential file: $CRED_FILE"
+
+JOIN_CMD="$(grep -E '^kubeadm join ' "$CRED_FILE" | head -1 || true)"
+[ -n "$JOIN_CMD" ] || die "No single-line kubeadm join command in credential file; regenerate it on cp1"
+read -r -a JOIN_ARGS <<< "$JOIN_CMD"
+[ "${JOIN_ARGS[0]:-}" = kubeadm ] && [ "${JOIN_ARGS[1]:-}" = join ] || die "Invalid join command format"
+[ "${JOIN_ARGS[2]:-}" = "${VIP}:${API_PORT}" ] || die "Join endpoint must be ${VIP}:${API_PORT}"
+[ "${JOIN_ARGS[3]:-}" = --token ] && [[ "${JOIN_ARGS[4]:-}" =~ ^[a-z0-9]{6}\.[a-z0-9]{16}$ ]] || die "Invalid token argument"
+[ "${JOIN_ARGS[5]:-}" = --discovery-token-ca-cert-hash ] && [[ "${JOIN_ARGS[6]:-}" =~ ^sha256:[a-f0-9]{64}$ ]] || die "Invalid CA hash argument"
+if [ "$ROLE" = cp ]; then
+  [ "${#JOIN_ARGS[@]}" -eq 10 ] && [ "${JOIN_ARGS[7]}" = --control-plane ] && [ "${JOIN_ARGS[8]}" = --certificate-key ] \
+    && [[ "${JOIN_ARGS[9]}" =~ ^[a-f0-9]{64}$ ]] || die "Invalid control-plane join arguments"
+else
+  [ "${#JOIN_ARGS[@]}" -eq 7 ] || die "Invalid worker join arguments"
+fi
+
+# certificate-key 2 小时有效期检查（仅 cp）
+if [ "$ROLE" = "cp" ]; then
+  if [ "${JOIN_ARGS[7]:-}" = --control-plane ]; then
+    inf "Control-plane certificate key expires after two hours"
+    warn "If the certificate key expires, run on cp1:
+       kubeadm init phase upload-certs --upload-certs
+       kubeadm certs certificate-key
+       Then regenerate cp-join.txt"
+  fi
+fi
+
+# ============================================================== 3. join
+hdr "3. kubeadm join"
+inf "Running kubeadm join (token and certificate key are hidden)"
+"${JOIN_ARGS[@]}" || die "Join failed. Check certificate-key expiry, token expiry, endpoint connectivity,
+  and any existing kubelet state. Do not reset the node without diagnosing the failure."
+pass "Join complete"
+
+# ============================================================== 4. 汇总
+hdr "4. Summary"
+inf "Waiting for node readiness; initial image pulls may take several minutes"
+for i in $(seq 1 30); do
+  sleep 10
+  if [ -f /etc/kubernetes/kubelet.conf ]; then
+    break
+  fi
+done
+
+cat <<EOF
+
+$(grn "============================================================")
+$(grn " $ROLE joined: $(hostname)  $SELF_IP")
+$(grn "============================================================")
+
+  Verify on any control-plane node (as root with KUBECONFIG=/etc/kubernetes/admin.conf):
+
+    kubectl get nodes -o wide
+
+$(warn "  If the node remains NotReady:")
+$(warn "    1. Verify Cilium is installed and healthy on cp1")
+$(warn "    2. Check kubelet: journalctl -u kubelet -n 50 --no-pager")
+$(warn "    3. Check containerd: crictl ps | head")
+$(warn "  The orchestrator adjusts CoreDNS replicas after control-plane joins")
+$(grn "============================================================")
+EOF

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Atlas KubeKit | By Atlas Richie
+set -euo pipefail
+VIP="${VIP:-10.20.1.9}" API_PORT="${API_PORT:-6443}"
+[ "$(id -u)" -eq 0 ] || { echo 'Run as root' >&2; exit 1; }
+[ -s /etc/kubernetes/admin.conf ] || { echo 'Missing /etc/kubernetes/admin.conf; initialize cp1 first' >&2; exit 1; }
+command -v kubeadm >/dev/null || { echo 'kubeadm is missing' >&2; exit 1; }
+show=0
+case "${1:-}" in --show) show=1 ;; --quiet|'') ;; *) echo 'Usage: create-join-credentials.sh [--show|--quiet]' >&2; exit 1 ;; esac
+join="$(kubeadm token create --ttl 2h --print-join-command)"
+token="$(printf '%s\n' "$join" | awk '{for(i=1;i<=NF;i++) if($i=="--token") {print $(i+1); exit}}')"
+hash="$(printf '%s\n' "$join" | awk '{for(i=1;i<=NF;i++) if($i=="--discovery-token-ca-cert-hash") {print $(i+1); exit}}')"
+[[ "$token" =~ ^[a-z0-9]{6}\.[a-z0-9]{16}$ ]] || { echo 'Failed to generate token' >&2; exit 1; }
+[[ "$hash" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo 'Failed to obtain CA hash' >&2; exit 1; }
+cert="$(kubeadm init phase upload-certs --upload-certs 2>&1 | grep -Eo '[[:xdigit:]]{64}' | tail -1)"
+[[ "$cert" =~ ^[a-f0-9]{64}$ ]] || { echo 'Failed to obtain control-plane certificate key' >&2; exit 1; }
+install -d -m 700 /root/k8s-join
+printf 'kubeadm join %s:%s --token %s --discovery-token-ca-cert-hash %s\n' "$VIP" "$API_PORT" "$token" "$hash" > /root/k8s-join/worker-join.txt
+printf 'kubeadm join %s:%s --token %s --discovery-token-ca-cert-hash %s --control-plane --certificate-key %s\n' "$VIP" "$API_PORT" "$token" "$hash" "$cert" > /root/k8s-join/cp-join.txt
+chmod 600 /root/k8s-join/*-join.txt
+echo 'Join credentials saved in /root/k8s-join; use the token and certificate key within two hours.'
+if [ "$show" -eq 1 ]; then
+  printf '\nWorker join:\n'; cat /root/k8s-join/worker-join.txt
+  printf '\nControl-plane join:\n'; cat /root/k8s-join/cp-join.txt
+fi
