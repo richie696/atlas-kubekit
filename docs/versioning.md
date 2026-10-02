@@ -2,7 +2,7 @@
 
 ## 版本来源与当前状态
 
-根目录 [VERSION](../VERSION) 是唯一由维护者直接编辑的项目版本来源。初始源码版本为 `0.1.0`，目前是待发布版本；写入版本号不会自动创建 Git tag 或 GitHub Release，也不代表已完成新的集群验证。
+根目录 [VERSION](../VERSION) 是唯一由维护者直接编辑的项目版本来源。当前已发布版本为 [`0.1.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.1.0)。写入版本号不会自动创建 Git tag 或 GitHub Release，也不代表已完成新的集群验证。
 
 版本号不包含 `v` 前缀。采用 [SemVer](https://semver.org/lang/zh-CN/) 的 `主版本.次版本.修订版本` 格式，可添加 `-alpha.1`、`-rc.1` 等预发布标识；例如 `0.2.0-rc.1`。`0.x` 属于初期开发阶段，兼容契约仍可能调整。
 

@@ -6,7 +6,7 @@
 
 - 工程名称：**Atlas KubeKit**
 - GitHub 仓库名称：`atlas-kubekit`
-- 源码版本：以 [VERSION](../VERSION) 为准；初始版本待发布。
+- 源码版本：[`0.1.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.1.0)，版本号以 [VERSION](../VERSION) 为准。
 - Git 远程地址：`git@github.com:richie696/atlas-kubekit.git`
 - 品牌署名：**By Atlas Richie**
 - MIT 版权署名：**Atlas Richie**

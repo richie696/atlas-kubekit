@@ -2,7 +2,7 @@
 
 **By Atlas Richie** · GitHub repository: `atlas-kubekit`
 
-**源码版本**：以 [VERSION](VERSION) 为准；目前尚未发布版本 tag。
+**源码版本**：[`0.1.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.1.0) · [版本来源](VERSION)。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -34,7 +34,7 @@ Interactive Bash toolkit for Kubernetes on Ubuntu 24.04: node initialization, au
 
 当前锁定 Kubernetes **v1.36.5**、Cilium **1.20.2**。版本变更应同时检查编排脚本与内部脚本；仅改一个变量不代表支持了新版本。插件 Chart 在安装时查询版本并供用户确认。
 
-历史验证来自特定实验室环境，未覆盖所有云厂商、配置组合、容量和灾备场景。项目尚未发布正式版本；验证记录与当前源码的差异见各报告。外部镜像、软件包和 Chart 必须实际可达。
+首发版本的历史验证来自特定实验室环境，未覆盖所有云厂商、配置组合、容量和灾备场景；验证记录与当前源码的差异见各报告。外部镜像、软件包和 Chart 必须实际可达。
 
 ## 部署流程
 
@@ -143,7 +143,7 @@ LB 不展示 kubectl 集群菜单，worker 展示本机运行时/CNI/API 连通�
 
 ## 版本管理
 
-`VERSION` 是项目版本的唯一来源，当前初始版本准备为 `0.1.0`。各 Bash 脚本内嵌自动同步的版本，单文件复制和 systemd 续跑无需读取外部版本文件。
+`VERSION` 是项目版本的唯一来源，当前发布版本为 `0.1.0`。各 Bash 脚本内嵌自动同步的版本，单文件复制和 systemd 续跑无需读取外部版本文件。
 
 ```bash
 # 查询实际脚本版本，无需 sudo
