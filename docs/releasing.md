@@ -6,6 +6,7 @@
 
 - 工程名称：**Atlas KubeKit**
 - GitHub 仓库名称：`atlas-kubekit`
+- 源码版本：以 [VERSION](../VERSION) 为准；初始版本待发布。
 - Git 远程地址：`git@github.com:richie696/atlas-kubekit.git`
 - 品牌署名：**By Atlas Richie**
 - MIT 版权署名：**Atlas Richie**
@@ -54,7 +55,9 @@ git commit -m "feat: introduce Atlas KubeKit deployment toolkit"
 
 ## 版本发布
 
-1. 将已确认的 Unreleased 内容转为实际版本和日期，保留未完成项。
+版本来源、同步命令与 tag 规则见 [版本管理指南](versioning.md)。发布前执行 `python3 scripts/update-version.py --check`；修改版本时只维护 VERSION，通过工具同步全部脚本并一同提交。
+
+1. 确认 VERSION 的目标版本，将 CHANGELOG 待发布条目转为实际发布版本和日期，保留未完成项。
 2. 用对应 commit 的真实验证记录说明兼容条件、升级影响和已知限制。
 3. 创建 tag 和 GitHub Release，发布源码包；release notes 链接 CHANGELOG 与完整部署指南。
 4. 仓库版和服务器运行副本是两份文件。更新源码不等于已更新 `/usr/local/lib/k8s-deploy/` 或 systemd 使用的副本；升级前确认续跑状态、备份和回退方案。

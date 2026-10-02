@@ -2,6 +2,8 @@
 
 **By Atlas Richie** · GitHub repository: `atlas-kubekit`
 
+**源码版本**：以 [VERSION](VERSION) 为准；目前尚未发布版本 tag。
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 面向 **Ubuntu Server 24.04 amd64** 的 Kubernetes 部署脚本集。从逐台主机初始化，到内网集中编排集群、按需安装插件，再到按节点角色巡检，使用四个按顺序编号的入口。
@@ -14,6 +16,7 @@ Interactive Bash toolkit for Kubernetes on Ubuntu 24.04: node initialization, au
 - [部署流程](#部署流程)
 - [运行要求](#运行要求)
 - [快速开始](#快速开始)
+- [版本管理](#版本管理)
 - [项目结构](#项目结构)
 - [文档与验证记录](#文档与验证记录)
 - [贡献与问题反馈](#贡献与问题反馈)
@@ -137,6 +140,24 @@ sudo bash ~/04-verify-cluster.sh --lang zh
 
 LB 不展示 kubectl 集群菜单，worker 展示本机运行时/CNI/API 连通性，CP 在具备 kubectl 和 `admin.conf` 时展示全局检查。节点 Ready、插件 Pod Running 与业务功能、备份恢复通过是不同结论。
 
+## 版本管理
+
+`VERSION` 是项目版本的唯一来源，当前初始版本准备为 `0.1.0`。各 Bash 脚本内嵌自动同步的版本，单文件复制和 systemd 续跑无需读取外部版本文件。
+
+```bash
+# 查询实际脚本版本，无需 sudo
+bash ./01-prepare-node.sh --version
+bash ./04-verify-cluster.sh -V
+
+# 维护者：同步 VERSION，并检查所有脚本是否一致
+python3 scripts/update-version.py
+python3 scripts/update-version.py --check
+```
+
+01～04 和全部内部阶段脚本均支持 `--version`/`-V`。版本不是部署成功标记，也与 Kubernetes/Cilium 版本分开；源码更新后仍需确认服务器实际副本。
+
+递增规则、版本同步和 `vX.Y.Z` tag 发布流程见 [版本管理指南](docs/versioning.md)。版本变更和 tag 不由部署脚本自动完成。
+
 ## 项目结构
 
 ```text
@@ -145,10 +166,13 @@ atlas-kubekit/
 ├── 02-deploy-cluster.sh        # 单节点集中编排
 ├── 03-install-addons.sh        # 可选插件菜单
 ├── 04-verify-cluster.sh        # 按角色巡检菜单
+├── VERSION                    # 源码版本的唯一维护来源
 ├── scripts/
+│   ├── update-version.py      # 同步脚本内嵌版本 / 检查一致性
 │   └── stages/                # 02 调用与分发的 8 个内部脚本
 ├── docs/
 │   ├── deployment-guide.md    # 完整流程、参数、恢复与验收
+│   ├── versioning.md          # 版本来源、查询、递增与发布
 │   ├── releasing.md           # GitHub 发布准备清单
 │   └── validation/            # 历史实验室验证摘要与限制
 ├── .github/
@@ -170,6 +194,7 @@ atlas-kubekit/
 - [部署与运维指南](docs/deployment-guide.md)：完整流程图、逐步解释、命令、恢复与验收。
 - [插件历史验证](docs/validation/addons-e2e.md)：14 项插件的核心功能验证摘要及配置边界。
 - [04 历史验证](docs/validation/verify-results.md)：角色菜单、组件检查、网络/PVC/HTTP/TLS 验证摘要。
+- [版本管理指南](docs/versioning.md)：VERSION、脚本内嵌版本、SemVer 和 Git tag。
 - [GitHub 发布清单](docs/releasing.md)：首次发布、版本变更、仓库设置与记录要求。
 
 原始 E2E 日志与资源快照已清理，摘要保留原验证日期、版本和限制。**目录整理后的版本尚未重新进行真实 01→04 部署回归**；这些历史报告不代表当前版本的全部路径已验证。

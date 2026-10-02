@@ -50,3 +50,7 @@ artifacts/
 *.zip
 *.qcow2
 *.img
+
+# Python maintenance tools
+__pycache__/
+*.py[cod]
