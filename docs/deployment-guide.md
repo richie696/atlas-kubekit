@@ -16,8 +16,11 @@
   - [02-5. 初始化 cp1，加入其余节点](#02-5-初始化-cp1加入其余节点)
   - [02-6. 最终检查、凭据清理与完成边界](#02-6-最终检查凭据清理与完成边界)
   - [03-1. 进入插件菜单并查看说明](#03-1-进入插件菜单并查看说明)
+  - [03-1a. 为全部插件选择下载源](#03-1a-为全部插件选择下载源)
+  - [03-1b. 按 Kubernetes 版本选择插件和镜像](#03-1b-按-kubernetes-版本选择插件和镜像)
   - [03-2. 收集插件参数，安装并回到菜单](#03-2-收集插件参数安装并回到菜单)
 - [常用命令与恢复方式](#常用命令与恢复方式)
+  - [02：旧集群基线修复](#02-旧集群基线修复)
 - [脚本清单与调用关系](#脚本清单与调用关系)
 - [04：按节点角色查看与验证](#04按节点角色查看与验证)
   - [04 的验证设计与验收边界](#04-的验证设计与验收边界)
@@ -70,7 +73,9 @@ flowchart TD
     U -- 否 --> RUN["集群基础能力可用；继续业务验收与运维"]
     U -- 是 --> V["在有 Helm 和管理员 kubeconfig 的 cp 上运行 03-install-addons.sh"]
     subgraph P3["阶段三：按需安装插件"]
-        V --> W["选择中文或英文；一级菜单选择插件；二级说明功能和前置条件"]
+        V --> LANG["选择中文或英文"]
+        LANG --> SOURCE["选择 Chart 和镜像下载源；可保留已保存的选择"]
+        SOURCE --> W["检查集群 API；一级菜单选择插件；二级说明功能和前置条件"]
         W --> X{"确认安装？"}
         X -- 否 --> W
         X -- 是 --> Y["填写插件专属参数和 values；Helm 安装并等待就绪"]
@@ -96,7 +101,7 @@ flowchart TD
 
 为每台机器安装 Ubuntu Server 24.04 amd64，确保至少 2 GiB 内存、系统盘有至少 10 GiB 可用空间；cp 节点至少 2 vCPU。主机名固定采用 `lb1`、`lb2`、`cp1`、`cp2`、`w1` 等 `lbN/cpN/wN` 格式，由 01 脚本设置。每台机器先要有**唯一且可达的当前 IP**，以便复制脚本或从控制台操作；新克隆机若都继承母盘 IP，应先在虚拟化平台或控制台消除冲突。确认网络可访问 Ubuntu 软件源及后续 Kubernetes 镜像源。
 
-把最新的 `01-prepare-node.sh` 放到每台服务器；阶段二发起节点还需要四个入口 `.sh` 文件和完整的 `scripts/stages/` 目录（建议复制完整项目）。脚本可以在服务器内网运行，不要求管理员的 Mac 或 Windows 电脑能直接访问全部节点。当前测试拓扑为 lb1/lb2、cp1～cp3、w1～w3；脚本的登记流程允许继续添加节点，不把数量固定为 8。
+把完整项目复制到每台服务器，保留 `locales/`、`scripts/lib/`、`scripts/stages/` 和 `scripts/lb/` 相对目录；正常交互依赖语言运行库和辅助程序。脚本可以在服务器内网运行，不要求管理员的 Mac 或 Windows 电脑能直接访问全部节点。当前测试拓扑为 lb1/lb2、cp1～cp3、w1～w3；脚本的登记流程允许继续添加节点，不把数量固定为 8。
 
 阶段脚本当前锁定 Kubernetes v1.36.5、Cilium 1.20.2。主机名中的数字从 1 开始；至少登记 `lb1` 和 `cp1`，允许没有 worker。常用输入默认地址为 `lb1=.20`、`lb2=.21`、`cp1=.22`、`cp2=.23`、`cp3=.24`、`w1=.25`、`w2=.26`、`w3=.27`，属于 `10.20.1.0/24`；API VIP 默认为 `10.20.1.9`。其他环境和新增节点应填写实际地址。所有节点的内网必须互通，LB 的 VRRP 还需要同二层网络。
 
@@ -144,21 +149,34 @@ SSH 网状互信就绪后，脚本通过 hostname 拉取每台机器的 `~/.k8s-
 
 ### 02-3. 确认全局部署计划与节点身份
 
-首次运行再询问 `standard/test` 模式、API VIP/端口、VRRP ID、Pod CIDR、Service CIDR、各 Kubernetes 节点的数据盘以及 LB 共用的 VRRP 认证值。没有预登记数据盘时，脚本只读寻找可用的空白独立盘：恰好一块时作为默认值，没有时默认 `none`，多块时必须明确选择。它列出完整计划，只有输入 `DEPLOY ALL` 才开始后续安装和可能的**空白数据盘初始化**。计划以 root 权限保存在发起节点 `/var/lib/k8s-deploy/cluster.conf`，用于失败后的继续执行；不要公开该文件全文。
+首次运行再询问 `standard/test` 模式、API VIP/端口、VRRP ID、Pod CIDR、Service CIDR、各 Kubernetes 节点的数据盘以及 LB 共用的 VRRP 认证值。数据盘选择先只读核对实际设备与组件路径，按下表处理，不依赖特定 IP、设备名或实验室拓扑：
+
+| 检测结果 | 行为 | 保存的计划 |
+| --- | --- | --- |
+| etcd、containerd、kubelet 或 worker 数据目录已在独立文件系统上 | 列出实际组件路径、设备和挂载点，直接保留当前布局，不重新格式化或迁移 | `existing` |
+| 有其他已挂载、可写的独立 ext4/XFS 空间，尚未供集群组件使用 | 展示设备、挂载点、总容量和可用空间，询问是否使用；默认否 | 确认后为 `reuse:/挂载路径` |
+| 有空白非系统整盘 | 阶段二恰好一块时给出默认值，多块必须明确选择；初始化仍受最终部署确认控制 | `/dev/具体设备` |
+| 没有可用独立盘，或用户选择不用 | 保持系统文件系统存储，检查余量 | `none` |
+
+检测支持分区、NVMe/SATA/VirtIO 设备、LVM/RAID 的父设备关系，保护系统盘的所有底层设备；同时读取 containerd root、kubelet root-dir、etcd data-dir，并解析目录软链接。网络/未知文件系统和无法确认归属的卷不会作为可初始化候选。
+
+它列出完整计划，只有输入 `DEPLOY ALL` 才开始后续安装和可能的**空白数据盘初始化**。计划以 root 权限保存在发起节点 `/var/lib/k8s-deploy/cluster.conf`，用于失败后的继续执行；不要公开该文件全文。
 
 确认后，02 检查每台机器的 `machine-id`、`product_uuid`、网卡 MAC 和 SSH 主机密钥是否唯一。重复的 `machine-id` 会在没有 kubeadm 状态时修复并安排重启续跑；旧克隆机重复的 SSH 主机密钥会重新生成并更新集群信任。`product_uuid` 或 MAC 冲突需先在虚拟化平台解决，脚本会停止而不会伪造主机身份。
 
-空白盘必须是非系统盘，且未分区、未挂载、无磁盘签名；有数据或分区的盘不会自动选中或格式化。已保存的部署计划重跑时保留原选盘，不因后来新增磁盘而自动改写。`standard` 和 `test` 都要求 cp 至少 2 vCPU、所有节点至少 2 GiB 内存；`test` 仅降低独立盘容量门槛，适合一次性安装验证。
+空白盘必须是非系统盘，且未分区、未挂载、无磁盘签名；有数据或分区的盘不会自动选中或格式化。重跑先重新检查实际挂载；已完成初始化的组件布局按 `existing` 保留。尚未执行的保存计划若与实际设备冲突则停止，不因后来新增磁盘而自动改选。`standard` 和 `test` 都要求 cp 至少 2 vCPU、所有节点至少 2 GiB 内存；`test` 仅降低独立盘容量门槛，适合一次性安装验证。
 
 ### 02-4. 安装节点依赖、数据盘和负载均衡
 
-02 将 `setup-k8s-node.sh` 等阶段脚本分发到对应节点。CP/worker 安装基础包与时间同步服务，关闭 swap，配置内核模块和 sysctl，安装并检查 containerd 的 `SystemdCgroup=true`，再安装并锁定 kubeadm/kubelet/kubectl 版本。选独立盘时先核对其不是系统盘、未分区/未挂载/无签名，再按计划格式化和挂载：cp 用 `/var/lib/etcd`，worker 用 `/os_data`。`standard` 模式要求 cp 独立盘至少 90 GiB、worker 至少 500 GiB；一次性 `test` 模式把独立盘最低值降为 20 GiB。
+02 将 `setup-k8s-node.sh` 等阶段脚本分发到对应节点。CP/worker 安装基础包与时间同步服务，关闭 swap，配置内核模块和 sysctl，安装并检查 containerd 的 `SystemdCgroup=true`，再安装并锁定 kubeadm/kubelet/kubectl 版本。选择**空白盘**时核对其不是系统盘、未分区/未挂载/无签名，格式化前再检查一次，按计划挂载：cp 用 `/var/lib/etcd`，worker 用 `/os_data`。已有组件挂载直接保留，其他已挂载空间经确认后使用其 `.atlas-kubekit/<节点名>/etcd` 或 `worker-data` 子目录，通过持久化 bind mount 映射到对应目标，**不格式化、不删除原有文件**。源挂载和 bind mount 写入 fstab，配置启动挂载依赖；原组件目录或专属子目录已有数据时停止，要求另行迁移，避免遮住旧数据。新初始化的空白盘在 `standard` 模式下要求 cp 至少 90 GiB、worker 至少 500 GiB；`test` 将该门槛降为 20 GiB。已有挂载空间使用可用容量判断，复用时至少 10 GiB 可用空间，仍需按实际负载规划容量。
 
-CP 和 worker 都可以选择 `none` 使用系统盘；CP 的 etcd 数据仍位于 `/var/lib/etcd`，只是该目录不再是独立挂载点。02 将保存的选盘结果传给初始化与加入脚本：选 `none` 时检查系统盘余量，并拒绝 `/var/lib/etcd` 的残留挂载或 fstab 记录；选独立盘时必须先完成挂载，且该盘不能与系统盘同源。etcd 开始写入后不能直接改换挂载方式，必须另行规划数据迁移与恢复。
+CP 和 worker 都可以选择 `none` 使用系统盘；CP 的 etcd 数据仍位于 `/var/lib/etcd`，只是该目录不再是独立挂载点。02 将保存的选盘结果传给初始化与加入脚本：选 `none` 时检查系统盘余量，并拒绝 `/var/lib/etcd` 的残留挂载或 fstab 记录；选空白盘或复用挂载空间时必须先完成对应挂载；选择 `existing` 时验证实际组件存储布局，允许各组件使用不同已有挂载。etcd 开始写入后不能直接改换挂载方式，必须另行规划数据迁移与恢复。
 
 系统盘至少 10 GiB 可用空间只是安装前的最低余量，实际容量和 I/O 性能需按负载规划。worker 的 `/os_data` 不会自动接管 containerd 镜像或 kubelet 数据，也不等于已经提供 Kubernetes 持久卷。
 
-全部 LB 安装 HAProxy/Keepalived：HAProxy 将 API TCP `6443` 转发给登记的 CP；Keepalived 在 LB 之间维护同一个 VIP。使用 VIP 前，02 从每个 Kubernetes 节点多次刷新 ARP，要求 VIP 的 MAC 属于登记 LB，避免误用已被其他设备占用的地址。VIP 应在网络管理层预留；当前测试 VIP 是 `10.20.1.9`。
+全部 LB 安装 HAProxy/Keepalived：HAProxy 将 API TCP `6443` 转发给登记的 CP；Keepalived 在 LB 之间维护 API VIP。阶段二还可选填写一个独立的应用入口 VIP；它会由 Keepalived 管理，并从每个 Kubernetes 节点检查 ARP 所有权。两个 VIP 都应先在网络管理层预留；当前测试 API VIP 是 `10.20.1.9`，应用入口 VIP 使用 `10.20.1.20`。留空应用 VIP 不改变原有部署行为。
+
+应用 VIP 只预置地址，不会在基础集群部署时猜测 Gateway Service 的 NodePort。Envoy Gateway 和业务 HTTPRoute/Gateway 建立后，使用 `05-manage-lb.sh` 为应用 VIP 增加 HAProxy 转发规则（通常是 TCP 443 到所有 K8s 节点的实际 HTTPS NodePort）。DNS 记录、客户端信任的 TLS CA、上游网络 ACL 仍需由对应的 DNS/PKI/网络系统配置。见 [LB 入口验证与部署缺口记录](validation/lb-ingress-deployment-gaps.md)。
 
 ### 02-5. 初始化 cp1，加入其余节点
 
@@ -170,7 +188,7 @@ cp1 经 containerd 镜像代理拉取 Kubernetes 镜像，执行 `kubeadm init`�
 
 02 的最后一关检查全部 Kubernetes 节点 `Ready`、Cilium/CoreDNS rollout、etcd Pod 数量和运行状态、CoreDNS 在 CP 间的分布、LB 服务 active 以及 VIP API `/readyz`。通过后撤销短期 join token，清理各节点的 join 文件，写入 `/var/lib/k8s-deploy/cluster-ready`，并从部署计划中移除 VRRP 认证值。`sudo bash ~/02-deploy-cluster.sh --status` 可查看部署完成标记。
 
-此时得到的是**基础 Kubernetes 集群**。阶段二没有自动部署 StorageClass、应用入口、监控、日志或异机 etcd 备份；节点 `Ready` 也不能替代业务 Pod 网络与数据恢复验收。文末列出这些能力的检查方法。
+此时得到的是**基础 Kubernetes 集群**。阶段二可预留应用入口 VIP，但不会部署 Gateway、配置业务转发规则、DNS、TLS 信任、StorageClass、监控、日志或异机 etcd 备份；节点 `Ready` 也不能替代业务 Pod 网络与数据恢复验收。文末列出这些能力的检查方法。
 
 阶段二中途失败时，已保存的计划会在发起节点下次运行时读取；脚本会重新检查阶段一文件和节点身份，按当前环境继续处理。若失败发生在首次确认计划之前，已配对成功的节点可在重新登记时直接输入 IP。对于不确定的 kubeadm 状态、IP 冲突、磁盘内容或 UUID/MAC 冲突，先处理具体故障，不能把“可重跑”理解为“任何错误都会自动修复”。
 
@@ -178,19 +196,59 @@ hosts 和 SSH 互信在输入 `DEPLOY ALL` 之前配置；该确认授权后续�
 
 ### 03-1. 进入插件菜单并查看说明
 
-基础集群就绪后，在具备 Helm 3、kubectl 和管理员 kubeconfig 的 CP 上运行 `sudo bash ~/03-install-addons.sh`；阶段二默认在 cp1 安装 Helm。03 先检查交互终端，然后选择语言：`1` 为英文（默认），`2` 为中文；也可通过 `--lang en` 或 `--lang zh` 直接指定。检查 API `/readyz` 后展示 14 个可选插件：Metrics Server、cert-manager、Prometheus 监控栈、Loki + Alloy、Argo CD、External Secrets Operator、ExternalDNS、Velero、NFS CSI、Envoy Gateway、Kyverno、MetalLB、KEDA、Traefik Ingress。主菜单输入 `L/l` 可重新选择语言，输入编号进入该插件的二级说明页，了解用途、前置服务、可配置项和安装后的后续动作；默认不安装，确认继续后才询问参数。输入 `0` 退出菜单。
+基础集群就绪后，在具备 Helm 3、kubectl 和管理员 kubeconfig 的 CP 上运行 `sudo bash ~/03-install-addons.sh`；阶段二默认在 cp1 安装 Helm。03 先检查交互终端，然后选择语言：`1` 为英文（默认），`2` 为中文；也可通过 `--lang en`、`--lang zh_CN` 或 `--lang zh_TW` 直接指定。语言选项从 locale 文件动态读取。**语言确定后先展示下载源选择菜单**，保留或更换方案，再检查 API `/readyz` 并展示 16 个可选插件：Headlamp、Metrics Server、cert-manager、Prometheus 监控栈、Loki + Alloy、Argo CD、External Secrets Operator、ExternalDNS、Velero、NFS CSI、Envoy Gateway、Kyverno、MetalLB、KEDA、Traefik Ingress、Longhorn。Headlamp 排在首位，建议先安装；随后每个插件成功安装/升级后，03 会检查 Headlamp 服务账号，并从已部署插件对应的 CRD API 组中发现实际资源名，自动更新显式的 `get/list/watch` 只读授权。启动脚本时也会对已有 Headlamp 和插件做一次权限对齐。主菜单输入 `L/l` 可重新选择语言，`S/s` 可更换下载源；输入编号进入该插件的二级说明页，了解用途、前置服务、可配置项和安装后的后续动作；默认不安装，确认继续后才询问参数。输入 `0` 退出菜单。
 
 语言切换覆盖菜单、插件说明、确认、配置问题和脚本自身的提示，仅对本次运行生效。确认支持 `yes/y`、`no/n` 和 `是/否`；配置值如 `none`、`NodePort`、`Retain` 仍需按原值输入。Helm/kubectl 原生输出保留工具自身语言；VNC/本地控制台缺少中文字库时使用英文。
 
+### 03-1a. 为全部插件选择下载源
+
+启动时，在语言选择之后直接展示中英文下载源菜单；可选官方源、DaoCloud、1Panel + DaoCloud、Google Docker Hub 缓存、自定义企业代理，回车或 `0` 保留现有选择并继续。默认官方源；切换后的配置原子写入登录账号的 `~/.k8s-deploy/addon-sources.json`（0600），后续所有插件共用，重新运行 03 时仍加载并展示该选择。主菜单 `S/s` 可再次打开同一菜单。选择源本身不会安装插件或修改 containerd。
+
+```mermaid
+flowchart TD
+    START[启动并确定语言] --> B[查看覆盖范围，选择下载方案]
+    A[插件主菜单] -->|S| B
+    B --> C[保存或保留方案，进入主菜单]
+    C --> D[选择插件，查看说明并确认]
+    D --> E[收集插件参数和版本]
+    E --> V[读取实际 Kubernetes 版本，筛选稳定候选]
+    V --> F{Chart 类型}
+    F -->|HTTP Helm 仓库| G[按方案下载索引和包，校验 SHA256]
+    F -->|OCI| H[映射 OCI 仓库，由 Helm 下载指定版本]
+    G --> I[处理镜像 values 和渲染后镜像地址]
+    H --> I
+    I --> P[复核兼容范围，按集群版本和 API 预渲染]
+    P --> J[Helm 安装或升级并等待就绪]
+    J --> A
+```
+
+国内优先尝试 DaoCloud 方案；1Panel 方案用其 Docker Hub 代理，其他公开仓库和文件用 DaoCloud。Google 仅覆盖部分 Docker Hub 缓存，普通 Helm 文件及其他仓库仍走官方，可能缺少 Envoy OCI Chart。自定义方案需要提供 HTTPS 文件代理和保留原仓库路径的 OCI/镜像代理；阿里云 ACR、腾讯云 TCR、Harbor 均需自行配置缓存/同步和鉴权，不能直接把域名当成全量公开镜像源。
+
+所有插件的版本及镜像处理依赖 Python 的 PyYAML；缺少时询问是否通过已配置的 Ubuntu apt 源安装 `python3-yaml`，默认不安装。镜像策略覆盖安装资源的常见公开仓库 `image` / `imageRepository` 字段、镜像 values、Prometheus operator 镜像参数和 Envoy 配置。Envoy 不再询问数据面镜像坐标：从 Chart 的 `appVersion` 确定发布版本，自动读取该版本官方发布说明中的镜像建议、Chart 默认值或版本标签源码中的 `DefaultEnvoyProxyImage`，保留版本及摘要，再应用下载源。无法得到可靠值时停止并提示元数据或网络问题，不按 Chart 版本猜测 Envoy 版本。
+
+下载错误会显示当前来源并停止，已保存的选择保留；修复网络或重跑 03 后通过 `S` 换源。不会静默回退上游、关掉 TLS 校验、写全节点运行时镜像配置，或仅因切源就重启已安装组件。更多范围和例子见 [插件下载源](addon-download-sources.md)。
+
+### 03-1b. 按 Kubernetes 版本选择插件和镜像
+
+03 从 API `/version` 获取实际 Kubernetes 服务端版本。全部 16 项插件统一从稳定 Chart 中筛选候选；使用 Helm 自身判断 `kubeVersion` 范围，排除弃用和明确不匹配的版本。Metrics Server、cert-manager、Envoy Gateway、KEDA、Kyverno 还会动态读取官方兼容表，通过所选 Chart 的 `appVersion` 匹配应用分支，不将 Chart 版本当作应用版本。Envoy 的稳定 Chart 版本从官方发布目录发现。Longhorn 另按其官方文档要求拒绝低于 Kubernetes 1.34 的集群版本。
+
+安装时显示依据：`UPSTREAM` 为符合已适配的官方范围，`CHART` 为仅符合 Chart 声明，`UNKNOWN` 为无法确认兼容。只有最低版本声明也不能代表上游验证了未来所有 Kubernetes 版本。可解析的官方表中无匹配候选时停止；没有可用规则时，继续未确认候选需要用户明确确认，默认拒绝。手动改版本后仍需复核下载包。
+
+所有默认组件镜像使用所选 Chart 的配套版本，下载源只改变仓库地址，Envoy 数据面另按对应版本发布信息自动解析。已有显式 values 和本次额外 values 中的自定义镜像会保留并提示核对，云厂商扩展等外部镜像也不由通用规则证明兼容。升级使用新 Chart 默认值并叠加这些显式配置。
+
+提交安装前，按当前集群版本、API 版本列表和最终 values 预渲染并检查资源 API 版本；未通过不会进入 Helm 安装。这不等于服务端 schema、CRD 迁移、外部依赖及实际插件功能验证。具体适配和限制见[全部插件的版本与 Kubernetes 匹配](addon-download-sources.md#全部插件的版本与-kubernetes-匹配)。
+
 ### 03-2. 收集插件参数，安装并回到菜单
 
-03 根据选项询问专属参数。例如，Metrics Server 询问副本和 kubelet TLS；监控栈询问保留期、StorageClass/PVC 与 Grafana 管理员密码；NFS CSI 需要现成的 NFS server/export；MetalLB 需要已预留且避开 API VIP 的地址池；Loki/Alloy、ExternalDNS、Velero 要求用户提供含外部服务配置的 Helm values 文件。脚本不猜测云厂商凭据或对象存储。已有 Helm release 会先询问是否升级，默认跳过；安装使用 Helm 并等待就绪，完成或取消后回到菜单继续选择。
+03 根据选项询问专属参数。例如，Metrics Server 询问副本和 kubelet TLS；监控栈询问保留期、StorageClass/PVC 与 Grafana 管理员密码；NFS CSI 需要现成的 NFS server/export；MetalLB 需要已预留且避开 API VIP 的地址池；Longhorn 安装前通过阶段二 SSH mesh 自动在所有 Kubernetes 节点安装 `open-iscsi`、`nfs-common` 和必需主机工具，启用 `iscsid`，并加载及持久化 `iscsi_tcp`，然后询问副本数及默认 StorageClass 选择；安装会避开 Longhorn 官方标记不兼容的 open-iscsi 2.1.12。Longhorn Base Image 的挂载传播、磁盘容量与文件系统适用性仍需按实际节点确认；Envoy Gateway 在控制器就绪后可选复用或创建 Envoy GatewayClass，再为已有 Service 创建基础 HTTP Gateway/HTTPRoute；Loki/Alloy、ExternalDNS、Velero 要求用户提供含外部服务配置的 Helm values 文件。脚本不猜测云厂商凭据或对象存储。已有 Helm release 会先询问是否升级，默认跳过；安装使用 Helm 并等待就绪，完成或取消后回到菜单继续选择。
 
-脚本使用官方 Helm 仓库或 OCI chart，查询稳定版本并在安装前显示版本供修改，安装采用 `helm upgrade --install --wait --atomic`。CRD 升级仍需遵循对应插件的官方升级说明。必填的 values 文件须使用节点上的绝对路径；包含云密钥的文件应放在受保护路径，不提交到代码仓库。Grafana 密码可隐藏输入或由脚本生成。
+脚本通过当前选择的下载方案获取 Helm Chart，筛选符合当前 Kubernetes 范围的稳定候选，显示版本供修改并复核，安装采用 `helm upgrade --install --wait --atomic`。CRD 升级仍需遵循对应插件的官方升级说明。必填的 values 文件须使用节点上的绝对路径；包含云密钥的文件应放在受保护路径，不提交到代码仓库。Grafana 密码可隐藏输入或由脚本生成。
 
 MetalLB 的 Layer 2 地址池适用于支持 ARP 的自建网络，例如 Proxmox；云 VPC 一般应使用云平台负载均衡。地址池不能与 DHCP、节点或 API VIP 重叠。Traefik 的 Service 默认 NodePort，可选 LoadBalancer（需要 MetalLB 或云负载均衡）或 ClusterIP，不复用 API VIP，也不自动设为默认 IngressClass。业务 Ingress 应指定 `spec.ingressClassName: traefik`。监控未配置 StorageClass 时使用临时存储，重建 Pod 会丢失历史数据。
 
-插件安装只代表控制器或相关组件就绪，通常还需单独创建业务资源：如 cert-manager 的 Issuer、Envoy Gateway 的 Gateway/Route、Traefik 的 Ingress、External Secrets 的 SecretStore、KEDA 的 ScaledObject、Velero 的备份计划。03 不会自动完成这些与业务环境有关的配置。社区版 ingress-nginx 已于 2026 年 3 月退役，因此菜单提供仍在维护的 Traefik 来处理传统 `Ingress` 资源；它不保证兼容 nginx 专属注解。
+Headlamp 默认只用 ClusterIP，并将控制台 Pod 的默认 ClusterRoleBinding 设为 Kubernetes 内置 `view` 只读角色。03 为集群概览、存储、DRA、CRD 定义、Cilium、RBAC 等基础页面配置显式只读权限；对于已安装插件，则依据当前已部署 Helm release 与集群实际 CRD 资源名，自动维护插件 API 的 `get/list/watch` 权限，不授予写权限或 Secret 读取。可用 `kubectl port-forward` 访问，或在规划认证后由独立 Ingress/Gateway 暴露。需要写操作时，应通过受控 values 显式提供自定义 RBAC，不应直接恢复到 cluster-admin。Longhorn 使用节点本地容量，默认数据目录 `/var/lib/longhorn`，数据盘不是强制要求；但生产使用需检查所有存储节点依赖、盘容量和故障域，并另行配置异地备份。Longhorn 自身快照功能随存储组件提供；Kubernetes 通用 `VolumeSnapshot` API 还需要 external-snapshotter controller，当前 03 选项没有安装该控制器。独立节点或磁盘本身不构成备份。
+
+插件安装只代表控制器或相关组件就绪，通常还需单独创建业务资源：如 cert-manager 的 Issuer、Traefik 的 Ingress、External Secrets 的 SecretStore、KEDA 的 ScaledObject、Velero 的备份计划。Envoy 的可选向导可把一个指定域名的 HTTP 流量转到已有 Service，但不配置 TLS、DNS、认证或外部地址；生产环境应另外完成证书、安全策略和入口连通性验证。03 不会自动完成其他与业务环境有关的配置。社区版 ingress-nginx 已于 2026 年 3 月退役，因此菜单提供仍在维护的 Traefik 来处理传统 `Ingress` 资源；它不保证兼容 nginx 专属注解。
 
 03 菜单的每个选项对应的安装边界如下；“后续动作”不会因为安装 Helm release 而自动完成：
 
@@ -205,15 +263,87 @@ MetalLB 的 Layer 2 地址池适用于支持 ARP 的自建网络，例如 Proxmo
 | ExternalDNS | 询问 DNS provider、域名、TXT owner ID、来源与必填凭据 values；默认仅新增/更新记录 | 验证提供商权限及记录同步范围 |
 | Velero | 用必填 values 安装备份组件和 provider 插件配置 | 创建备份计划并测试恢复；etcd 快照需另做 |
 | NFS CSI | 询问已有 NFS server/export、StorageClass 名与回收策略 | 验证 PVC 创建、跨节点挂载和数据回收 |
-| Envoy Gateway | 安装 Gateway API 入口控制器；可选 values | 创建 GatewayClass、Gateway、Route 及对外访问地址 |
+| Envoy Gateway | 安装 Gateway API 入口控制器；可选 values；就绪后可选复用/创建 Envoy GatewayClass，并为已有 Service 创建 HTTP Gateway/HTTPRoute | 向导仅处理 HTTP 路由；需另配 DNS、TLS、认证及外部 LoadBalancer/入口，并检查 Accepted/Programmed 状态 |
 | Kyverno | 安装策略引擎；可选 values | 从审计策略开始，再逐步决定执行策略 |
 | MetalLB | 安装控制器，创建 Layer 2 地址池和广播；询问已预留 IP 范围 | 验证 LoadBalancer Service 获得地址；云 VPC 应用云负载均衡 |
 | KEDA | 安装事件驱动扩缩容控制器与 CRD；可选 values | 给业务创建 ScaledObject/ScaledJob 和认证配置 |
 | Traefik Ingress | 安装传统 `Ingress` 控制器；询问副本数、Service 类型和可选 values；不自动设为默认 IngressClass | 为业务 Ingress 设置 `spec.ingressClassName: traefik`，并将外部流量导向其 Service |
+| Headlamp | 菜单首项；安装集群可视化控制台，Service 保持 ClusterIP，默认绑定只读 `view` 角色和基础集群页面权限；安装或升级插件后，按已部署 release 自动发现其 CRD 并同步显式 `get/list/watch` 权限；不授予写权限或 Secret 读取 | 建议先安装 Headlamp；使用 port-forward 或另行配置认证入口；脚本启动时也会对齐已有插件权限 |
+| Longhorn | 通过阶段二 SSH mesh 在全部 Kubernetes 节点自动安装 `open-iscsi`、`nfs-common` 和必需主机工具，启用 `iscsid`，加载并持久化 `iscsi_tcp`；阻止不兼容的 open-iscsi 2.1.12；询问副本数和默认 StorageClass | Longhorn Base Image 仍要求挂载传播；按实际磁盘确认 `/var/lib/longhorn` 或自定义目录容量、文件系统与故障域，并执行 PVC/故障恢复和异地备份验收 |
 
 ## 常用命令与恢复方式
 
 以下假定 01～04 入口已放到登录用户主目录，02 同目录下还有 `scripts/stages/`；也可在完整项目目录中运行入口脚本。服务器安装副本仍位于 `/usr/local/lib/k8s-deploy/`，02 兼容旧平铺包。01 在每台机器运行；02 在持有部署计划的发起节点运行；03 在具备 Helm 和管理员 kubeconfig 的 cp 上运行。
+
+### 02 阶段一/阶段二只读合规检查
+
+对已经部署的旧集群运行 `sudo bash ./02-deploy-cluster.sh --check`，可以按当前源码方案检查节点 hostname、Ubuntu/架构、阶段一 ready 标记与 `node.conf`、sudo、机器身份和 SSH key、阶段二 containerd/kubelet/LB 服务、Kubernetes 版本、containerd cgroup 与全节点 `/etc/hosts` 映射。此模式只读取远程数据，不会调用普通部署流程，不会改配置、轮换密钥或重启节点。
+
+应传入所有节点及真实 IP；示例：
+
+```bash
+sudo bash ./02-deploy-cluster.sh --check --user ubuntu --identity /home/ubuntu/.ssh/id_ed25519 \
+  --node lb1=10.20.1.20 --node lb2=10.20.1.21 \
+  --node cp1=10.20.1.22 --node cp2=10.20.1.23 --node cp3=10.20.1.24 \
+  --node w1=10.20.1.25 --node w2=10.20.1.26 --node w3=10.20.1.27
+```
+
+重复 `--node NAME=IP` 可用于任意数量；省略时优先使用登录账号的 `~/.k8s-deploy/audit-nodes.conf`，其次读取本机 `/etc/hosts` 中的 `lbN/cpN/wN` 项，没有可用清单时进入交互输入。可以一次性粘贴多行节点清单，例如：
+
+```text
+lb1=10.20.1.12
+cp1=10.20.1.13
+cp2=10.20.1.14
+w1=10.20.1.16
+done
+```
+
+也接受 `NAME IPv4` 和 `NAME:IPv4`，可以混用；整份清单只显示一次输入提示，以空行、`done` 或输入流结束为边界。无效行会阻止本次检查，避免漏掉节点后误报完整检查。`NAME=IP` 只登记清单，不提供 SSH 登录凭据。显式传入不存在的 `--identity` 会直接报错；sudo 启动时仍从原登录账号主目录选择身份，不会把 `authorized_keys` 当作私钥。本机通过本地命令采集，缺少远程身份时只将远程节点标记为未验证。
+
+**旧集群首次建立审计访问：** 在发起节点以外的每台机器运行 `sudo bash ./01-prepare-node.sh --pair`（简写 `-p`），再在发起节点运行 `sudo bash ./02-deploy-cluster.sh --check --pair`，粘贴这些配对码，每行一个，最后输入 `done`。`01 --pair` 可用于没有阶段一配置、`ready` 或公开清单的现有节点，仅使用当前节点名、网卡上的 IP 和登录账号启用一次性 SSH 公钥登记服务；账号或多网卡选取需调整时可传 `--user USER --ip IPv4`，IP 必须已经属于本机。它不会询问数据盘、修改挂载、轮换 SSH 主机密钥或补写阶段一完成状态。`--code` 可查看当前未使用的码；重新运行 `--pair` 会替换旧码。
+
+审计入口和阶段二部署共用 `scripts/stages/enrollment.py` 的码解析、HMAC 请求与响应认证逻辑。首次输入配对码时在发起节点建立 `~/.ssh/id_ed25519_atlas_audit` 专用审计密钥，只把公钥提交给目标节点；经过配对码认证的主机公钥固定在 `~/.k8s-deploy/audit-known_hosts`，节点清单保存为 `audit-nodes.conf`，都属于原登录账号。发起节点自动加入清单，后续运行普通 `--check` 可直接复用这些状态。输入错误的码会显示简明原因并允许输入新码重试；默认检查不启用配对或修改 SSH 授权。
+
+需要读取 root 配置、但旧账号没有 NOPASSWD sudo 时，运行 `sudo bash ./02-deploy-cluster.sh --check --sudo`。脚本询问一次所有目标节点共用的 sudo 密码，通过 SSH 标准输入传输，不写入命令参数或配置文件，也不修改 sudoers。不同节点密码不同时，应分批检查或先提供相应的非交互只读访问方式。密码授权只用于本次采集，报告仍会如实指出缺少最新方案要求的 NOPASSWD 策略。无法取得 root 权限时，对应项目显示为未验证，不能当成通过。
+
+报告逐项给出修复建议。已加入 etcd/Kubernetes 的节点，修改 machine-id、product UUID 需要单独维护计划；SSH 主机密钥可通过以下修复模式明确选择并备份轮换。修复完成后重新运行 `--check`，并用 04 检查集群运行状态。
+
+### 02：旧集群基线修复
+
+旧节点没有新方案的阶段一状态时，不要依靠重跑完整 01/02、手工 touch ready 或调用 `--config-only` 绕过要求。使用 `--repair` 从任意已建立审计访问的集群节点补齐主机基线，复用 `--check` 的节点清单、审计密钥、`--identity`、`--node` 和可选 `--sudo` 密码授权。新环境缺少 SSH 互信时，可先执行 `01 --pair` 和 `02 --check --pair`；repair 也支持显式 `--pair`，但 dry-run 拒绝配对，以免“只读预览”产生新的授权。
+
+```bash
+cd ~/deploy
+# 收集所有节点的 root 配置并预览全部修复；不修改配置
+sudo bash ./02-deploy-cluster.sh --repair --sudo --items all --dry-run
+# 看清计划后进入六项菜单
+sudo bash ./02-deploy-cluster.sh --repair --sudo
+# 或选定全部项目，仍需输入两次明确的确认语句
+sudo bash ./02-deploy-cluster.sh --repair --sudo --items all
+# 只修 hosts，或在其他问题修好后单独注册
+sudo bash ./02-deploy-cluster.sh --repair --sudo --items hosts
+sudo bash ./02-deploy-cluster.sh --repair --sudo --items adopt
+```
+
+六项依次为 hosts、节点密钥与互信、SSH 策略、sudo、旧节点注册、主机密钥轮换。菜单连续编号，允许逗号分隔多选。默认前五项；已有重复主机密钥时，注册会被阻止，需明确选第六项或 `all`。实际修复必须在交互终端输入 `REPAIR`；主机密钥轮换另需输入 `ROTATE HOST KEYS`。不提供绕过确认的 `--yes`。
+
+修复先确认所有清单节点可访问、有 root 读取权限、hostname/IP 与登记一致、OS/架构受支持，然后显示缺项与重复身份。root/sudo 不可用或清单错误时停止，避免只对部分清单继续配置。sudo 密码只在内存中保留，通过 SSH stdin 传输，不写入 argv、环境或配置文件；所有节点密码需一致，否则先准备对应的非交互 root 访问方式。
+
+确认后按依赖执行所选项目：
+
+1. 修复 hosts，保留无关条目与别名，检查实际 NSS 解析。
+2. 补齐缺失/不匹配/重复的节点密钥；正确的密钥不更换。仅传播公钥，保留原管理员 authorized_keys。本机临时保留原传输密钥以防发起节点的标准密钥正在被修复，临时副本不发送到其他节点。
+3. 配置所选的 root NOPASSWD sudo 并运行 visudo 校验。权限与部署阶段二一致，需要用户明确选择。
+4. 配置 SSH drop-in，检查有效全局及管理员 Match 策略，reload 后验证新 SSH 连接。优先配置/Match 冲突会停止；新连接失败时恢复原策略。
+5. 仅在用户选定时轮换重复/缺失的主机身份。保留已认证的控制连接，将新公钥固定到发起节点与集群 peers，验证新连接；验证失败时尝试通过保留会话恢复原主机密钥。缺失 ED25519 身份导致无法建立安全访问的节点需先通过控制台恢复 SSH。外部客户端不在自动更新范围内。
+6. 重新验证两两 SSH 访问与机器/密钥唯一性。`adopt` 还核对系统、资源、sudo、SSH、runtime/cgroup、swap、内核与实际组件挂载；未满足的包版本、机器 ID、UUID/MAC、runtime 或存储问题保持失败，需另行处理。通过后才保存公开 node.conf、root 的 keep-network 配置、验证记录与 ready。不会生成 `cluster-ready` 或声称整套集群功能已验收。
+7. 自动重跑只读审计；存在未选择或未解决项目时返回非零，显示剩余问题。完成项有备份并保留，可以在解决问题后重跑选定项。
+
+备份位于每台机器 `/var/lib/k8s-deploy/repair-backups/<时间-随机后缀>/`，按原绝对路径保存文件，原本不存在的文件以 `.absent` 记录。备份目录及私钥备份只允许 root 访问。它们是敏感恢复材料，不提交 GitHub。回退 hosts/sudo 时需检查原文件和权限；回退节点私钥后还需恢复属主、公钥清单及节点互信，不能只复制一个文件。不同操作的备份独立保存，按失败报告定位对应目录。全局事务回滚不在当前范围，SSH 策略/主机密钥仅对相应连接校验失败提供局部回退。
+
+轮换后，核对脚本打印的新主机指纹，再在外部客户端针对该节点删除旧条目并重新确认。例如 Mac OpenSSH 使用 `ssh-keygen -R 10.20.1.13`；DBX 使用它报错指向的 known_hosts 文件，需指定 `-f`。不要删除整个 known_hosts 或关闭指纹校验。
+
+`/var/lib/k8s-deploy/adopted-baseline.json` 记录工具版本、验证时间、实际存储和 `verified-existing-node` 来源。它代表当前基线的验证登记，不代表机器曾执行系统升级/重启流程。完整设计及尚需验证的故障分支见 [修复设计](validation/repair-design.md)。
 
 | 场景 | 命令 | 行为与前提 |
 |---|---|---|
@@ -221,11 +351,14 @@ MetalLB 的 Layer 2 地址池适用于支持 ARP 的自建网络，例如 Proxmo
 | 查看阶段一状态 | `sudo bash ~/01-prepare-node.sh --status` | 查看完成或续跑状态 |
 | 仅补生成公开清单 | `sudo bash ~/01-prepare-node.sh --config-only` | 必须已有 root 本机配置和阶段一完成标记 |
 | 查看当前未使用配对码 | `sudo bash ~/01-prepare-node.sh --code` | 只显示，不换码 |
-| 重新配对 | `sudo bash ~/01-prepare-node.sh --pair` | 生成新码，启动登记服务，旧码失效；简写 `-p` |
+| 启用或重新配对 | `sudo bash ~/01-prepare-node.sh --pair` | 仅启用一次性 SSH 公钥登记，旧码失效；旧集群无阶段一状态也可使用，简写 `-p` |
 | 为旧节点启用登记服务 | `sudo bash ~/01-prepare-node.sh --enable-enrollment` | 已完成阶段一、但未启用登记服务时使用 |
 | 开始或继续集中部署 | `sudo bash ~/02-deploy-cluster.sh` | 初次登记；重跑读取已保存的部署计划 |
 | 查看阶段二状态 | `sudo bash ~/02-deploy-cluster.sh --status` | 查看部署完成标记，再做实时检查 |
-| 按需安装插件 | `sudo bash ~/03-install-addons.sh` | 先选语言，再进入插件菜单 |
+| 旧集群审计登记 | `sudo bash ~/02-deploy-cluster.sh --check --pair` | 粘贴其他节点的配对码，建立审计访问并保存清单，再执行检查 |
+| 复用审计访问 | `sudo bash ~/02-deploy-cluster.sh --check` | 读取保存的审计清单和密钥，执行只读核验 |
+| 密码授权读取 root 设置 | `sudo bash ~/02-deploy-cluster.sh --check --sudo` | 询问一次远程 sudo 密码，不保存密码、不修改 sudoers |
+| 按需安装插件 | `sudo bash ~/03-install-addons.sh` | 选择语言、下载源后进入插件菜单 |
 | 指定插件菜单语言 | `sudo bash ~/03-install-addons.sh --lang en` 或 `--lang zh` | 英文适合 VNC/本地控制台；主菜单 `L/l` 可切换 |
 
 `--config-only` 读取 `/var/lib/k8s-deploy/node.conf`，核对当前 hostname、IP 和节点公钥，只生成或更新登录用户的 `~/.k8s-deploy/node.conf` 并标记 `PHASE1_READY=1`。它不重跑安装、不修改网络/SSH/hosts、不创建密钥或续跑服务、不重启。旧参数 `--publish` 是同义写法；未完成阶段一时应修复正常流程，而不是使用该参数绕过检查。
@@ -247,7 +380,7 @@ sudo bash ~/01-prepare-node.sh
 
 ## 脚本清单与调用关系
 
-部署按 **01 → 02 → 03（可选）** 执行，之后使用 **04** 日常查看与验证。阶段二发起节点须有四个入口 `.sh` 文件和完整的 `scripts/stages/` 目录（建议复制完整项目）；阶段二内部脚本位于 `scripts/stages/`，由 02 按角色分发和调用，04 则复制到需要检查的节点运行。
+部署按 **01 → 02 → 03（可选）** 执行，之后使用 **04** 日常查看与验证、**05** 管理现有 LB。使用完整项目包，阶段二内部脚本位于 `scripts/stages/`，由 02 按角色分发和调用；04 在需要检查的节点运行，05 在能 SSH 到 LB 的管理机运行。
 
 | 文件 | 用途 |
 |---|---|
@@ -282,7 +415,7 @@ sudo bash ~/04-verify-cluster.sh --lang en
 |---|---|---|
 | 全部节点 | 系统资源、时间、IP/路由/DNS、阶段标记、主机指纹、hosts 与本机到其他节点的 SSH、服务日志、磁盘挂载 | 查看本机；SSH 使用阶段一管理员用户及节点密钥，严格核对已登记主机指纹 |
 | CP | 节点条件、Pod/工作负载、API、Cilium、CoreDNS、etcd 健康与成员、证书到期、Service/入口/策略、存储、事件、指标、RBAC | 默认只读，命令失败继续显示并返回菜单 |
-| CP 插件二级菜单 | 与 03 相同的 14 个插件，查看已安装组件和相关业务资源 | CRD 不存在时显示未安装/不可用；资源存在不等于功能 E2E 通过 |
+| CP 插件二级菜单 | 与 03 相同的 16 个插件，查看已安装组件和相关业务资源 | CRD 不存在时显示未安装/不可用；资源存在不等于功能 E2E 通过 |
 | LB | HAProxy/Keepalived 服务、配置校验、后端 TCP 连通、VIP 所在网卡、API readyz、故障切换操作指引 | 不自动停止服务；故障切换另行手工演练 |
 | worker | kubelet/containerd、CRI 容器和镜像、本机 CNI、到 API 的 TCP 连通 | 只读；不显示 CP 全局查询 |
 | CP 可选功能测试 | 两个指定节点之间 Pod IP、Service 与 DNS；PVC 写入后重建 Pod 读取；用户指定 HTTP/TLS 入口的响应 | 创建临时资源前明确确认；使用唯一测试命名空间，退出时仅清理本次资源 |
@@ -574,3 +707,11 @@ sudo journalctl -u kubelet -n 100 --no-pager
 ```
 
 验收证据应分开记录：阶段二结束时的检查结果、当前实时状态、临时业务网络测试、故障切换和 etcd 恢复演练分别证明不同能力。节点 `Ready` 或系统 Pod `Running`，不能代替尚未执行的网络与数据恢复验收。
+
+磁盘调查可独立运行（只读，不进入初始化）：
+
+```bash
+sudo bash ./01-prepare-node.sh --disk-report --role cp   # worker 使用 --role worker
+```
+
+01 仍支持只拷贝单个入口文件；通用磁盘逻辑以 `scripts/stages/storage.py` 为唯一源码，并嵌入 01。维护时运行 `python3 scripts/sync-storage.py`，用 `--check` 确认生成内容一致。02 分发同一辅助脚本，`--check` 报告实际组件挂载和未分配的独立空间，不改磁盘配置。

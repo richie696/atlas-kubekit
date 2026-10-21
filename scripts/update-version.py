@@ -62,7 +62,7 @@ def main():
     if SEMVER.fullmatch(version) is None:
         parser.error("Use SemVer without a v prefix, for example 0.1.0 or 0.2.0-rc.1")
 
-    for name in ("01-prepare-node.sh", "02-deploy-cluster.sh", "03-install-addons.sh", "04-verify-cluster.sh"):
+    for name in ("01-prepare-node.sh", "02-deploy-cluster.sh", "03-install-addons.sh", "04-verify-cluster.sh", "05-manage-lb.sh"):
         if not (ROOT/name).is_file():
             parser.error(f"Missing entrypoint: {name}")
     stages = sorted((ROOT/"scripts/stages").glob("*.sh"))

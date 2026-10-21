@@ -18,6 +18,8 @@
 - 根目录 01～04 是用户入口，名称和顺序保持稳定。
 - `VERSION` 是项目版本的唯一维护来源，`scripts/update-version.py` 将版本同步到 Bash 脚本；不手工修改生成区块。
 - `scripts/stages/` 是 02 的内部部署步骤；02 负责角色判定、参数和分发。
+- `scripts/stages/storage.py` 是通用磁盘检测的唯一源码；修改后运行 `python3 scripts/sync-storage.py` 同步 01 的独立运行载荷，并用 `--check` 验证。
+- `scripts/addons/sources.py` 是 03 下载映射与镜像处理的唯一源码；修改后运行 `python3 scripts/sync-addon-sources.py` 同步独立载荷，并用 `--check` 验证，保证仅复制 03 仍可运行。
 - `docs/deployment-guide.md` 记录真实工作流程；安装成功与功能验证结论分别记录。
 - `docs/validation/` 保存有日期、版本、范围和限制的历史摘要。原始日志已清理，不应重新宣称可复查。
 - 服务器副本位于 `/usr/local/lib/k8s-deploy/`。改路径时要考虑平铺旧包、systemd 重启续跑和跨节点分发。

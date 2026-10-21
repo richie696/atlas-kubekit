@@ -6,7 +6,7 @@
 
 - 工程名称：**Atlas KubeKit**
 - GitHub 仓库名称：`atlas-kubekit`
-- 源码版本：[`0.1.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.1.0)，版本号以 [VERSION](../VERSION) 为准。
+- 源码版本：`0.2.0`（待发布），版本号以 [VERSION](../VERSION) 为准；上一发布基线为 `v0.1.0`。
 - Git 远程地址：`git@github.com:richie696/atlas-kubekit.git`
 - 品牌署名：**By Atlas Richie**
 - MIT 版权署名：**Atlas Richie**
@@ -14,7 +14,7 @@
 GitHub description 可直接复制下面一行。该文字仅保存在文档中，创建仓库后还需填写到 GitHub 的 About/Description：
 
 ```text
-面向 Ubuntu 24.04 的 Kubernetes 部署与运维工具集，提供节点初始化、高可用集群自动部署、常用插件按需安装，以及支持中英文菜单的集群健康检查。
+面向 Ubuntu 24.04 的 Kubernetes 部署与运维工具集，提供节点准备、高可用部署、审计修复、16 项插件、角色巡检、HAProxy/Keepalived 管理和可扩展语言目录。
 ```
 
 ## 首次公开前
@@ -22,7 +22,7 @@ GitHub description 可直接复制下面一行。该文字仅保存在文档中�
 - [ ] 确认 LICENSE 的版权署名与年份；原创文件使用 MIT，第三方材料保留相应来源和许可。
 - [ ] 确认 README 的支持范围、版本锁定、示例 IP 和网络条件准确，未把实验室默认值当作通用云方案。
 - [ ] 审查所有待提交文件及 Git 历史，清除私钥、配对码、join token、certificate-key、kubeconfig、真实配置和备份；`.gitignore` 不会清除已跟踪内容或历史。
-- [ ] 确认根目录四个入口与 `scripts/stages/` 一起发布，压缩包不要遗漏内部脚本。
+- [ ] 确认根目录五个入口、`scripts/stages/`、`scripts/lib/`、`scripts/lb/`、`scripts/addons/` 和 `locales/` 一起发布，压缩包保留目录结构。
 - [ ] 按 [贡献指南](../CONTRIBUTING.md) 做静态检查；在可销毁环境进行 01→02 新节点部署和失败重跑。
 - [ ] 验证 02 新仓库路径、旧平铺包、缺文件错误及 systemd 重启续跑，特别是 machine-id 冲突引发的续跑。
 - [ ] 按变化范围验证 03 插件功能和 04 的 CP/LB/worker 菜单；说明未执行项，勿复用旧报告冒充新版本验收。
