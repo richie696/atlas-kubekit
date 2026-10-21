@@ -2,7 +2,7 @@
 
 **By Atlas Richie** · GitHub repository: `atlas-kubekit`
 
-**源码版本**：`0.2.0`（待发布） · [版本来源](VERSION) · [本版变更](CHANGELOG.md#020--待发布)。
+**当前版本**：[`0.2.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.2.0) · **发布日期：2026-10-22** · [版本来源](VERSION) · [本版变更](CHANGELOG.md#020--2026-10-22)。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -311,7 +311,7 @@ bash ./05-manage-lb.sh
 
 ## 版本管理
 
-`VERSION` 是项目版本的唯一来源，当前源码为待发布的 `0.2.0`。各部署入口和内部阶段 Bash 脚本内嵌自动同步的版本，版本查询无需读取外部 VERSION；正常交互仍需完整运行依赖。
+`VERSION` 是项目版本的唯一来源，当前发布版本为 `0.2.0`，对应 tag 为 `v0.2.0`。各部署入口和内部阶段 Bash 脚本内嵌自动同步的版本，版本查询无需读取外部 VERSION；正常交互仍需完整运行依赖。
 
 ```bash
 # 查询实际脚本版本，无需 sudo
@@ -378,10 +378,11 @@ atlas-kubekit/
 - [国际化说明](docs/internationalization.md)：messageKey、回退规则、新语言扩展及未迁移清单。
 - [LB 安装回归](docs/validation/lb-installer-regression.md)：配置事务、重跑与故障恢复的自动化检查范围。
 - [真实双 LB 验证](docs/validation/lb-live-e2e-20261022.md)：首次安装、路由、服务故障与重启观察记录。
+- [0.2.0 发布验收](docs/validation/release-0.2.0.md)：本地 Kubernetes 集群完整验证的维护者确认与发布范围。
 - [版本管理指南](docs/versioning.md)：VERSION、脚本内嵌版本、SemVer 和 Git tag。
 - [GitHub 发布清单](docs/releasing.md)：首次发布、版本变更、仓库设置与记录要求。
 
-旧插件和 04 报告保留原验证日期与范围；2026-10-22 的 LB 记录覆盖两台 Ubuntu 24.04.5 节点的真实安装、路由、重跑、故障切换和重启，并有 15 项自动化回归记录。它来自修改版本号前的源码，**本版尚未完成全新集群的完整 01→04 回归、全部 16 插件回归或六项修复的完整故障回退验收**。本次版本/文档整理不重跑这些部署，也不把历史证据改写为整版通过。
+维护者于 **2026-10-22 确认 0.2.0 已在本地 Kubernetes 集群完成完整验证并批准发布**，见 [发布验收记录](docs/validation/release-0.2.0.md)。此前的双 LB 记录还保留了真实安装、路由、重跑、故障切换、重启及 15 项自动化回归的详细证据。历史报告保留各自日期、版本和观察范围；本地验证不扩展为所有云厂商、拓扑、容量或灾备场景的验证承诺。
 
 ## 贡献与问题反馈
 
