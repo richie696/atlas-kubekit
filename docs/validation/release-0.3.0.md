@@ -28,6 +28,8 @@ git diff --cached --check
 
 开发冻结时 macOS Python 3.9 和 Ubuntu Python 3.12 各 180 项回归通过；正式版本再次运行
 同一校验，并在推送后核对对应提交的 GitHub Actions。CI 的实际结果以对应提交运行记录为准。
+首次托管执行的两个 Ubuntu 组合通过，macOS 14 任务因 runner 配置不受支持而在执行前取消；
+仅将 CI 标签修正为 `macos-15-intel` 后重新执行四组合，不将取消记录当作测试通过。
 
 ## 制品和清理
 
