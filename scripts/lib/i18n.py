@@ -22,10 +22,15 @@ class LocalizationError(ValueError):
     """Raised for invalid locale catalogs or unknown locale codes."""
 
 
+def _catalog_paths() -> list[Path]:
+    """Ignore hidden editor/AppleDouble files transported with source archives."""
+    return sorted(path for path in LOCALES_DIR.glob('*.json') if not path.name.startswith('.'))
+
+
 def available_locales() -> dict[str, str]:
     """Return supported locale codes and display names, ordered by code."""
     result: dict[str, str] = {}
-    for path in sorted(LOCALES_DIR.glob("*.json")):
+    for path in _catalog_paths():
         catalog = _read(path.stem)
         result[catalog["locale"]] = catalog["displayName"]
     return result
@@ -33,7 +38,7 @@ def available_locales() -> dict[str, str]:
 
 def _locale_path(locale: str) -> Path:
     normalized = locale.replace("-", "_").casefold()
-    for path in LOCALES_DIR.glob("*.json"):
+    for path in _catalog_paths():
         if path.stem.replace("-", "_").casefold() == normalized:
             return path
     raise LocalizationError(f"Unsupported locale: {locale}")
@@ -48,12 +53,12 @@ def _read(locale: str) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise LocalizationError(f"Unsupported locale: {locale}") from None
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, json.JSONDecodeError, UnicodeError) as error:
         raise LocalizationError(f"Cannot read locale {locale}: {error}") from error
     actual = str(data.get("locale", "")).replace("-", "_").casefold() if isinstance(data, dict) else ""
     if not isinstance(data, dict) or actual != path.stem.replace("-", "_").casefold():
         raise LocalizationError(f"Invalid locale metadata: {path}")
-    if not isinstance(data.get("displayName"), str) or not isinstance(data.get("messages"), dict):
+    if set(data)!={'locale','displayName','fallback','messages'} or not isinstance(data.get("displayName"), str) or not isinstance(data.get("messages"), dict):
         raise LocalizationError(f"Invalid locale structure: {path}")
     for key, value in data["messages"].items():
         if not KEY_PATTERN.fullmatch(key) or not isinstance(value, str):
@@ -112,7 +117,7 @@ def export_bash(locale: str) -> str:
 def validate_catalogs() -> list[str]:
     """Validate locale metadata, fallback chains, message keys, and placeholders."""
     errors: list[str] = []
-    catalogs = [_read(path.stem) for path in sorted(LOCALES_DIR.glob("*.json"))]
+    catalogs = [_read(path.stem) for path in _catalog_paths()]
     known = {catalog["locale"] for catalog in catalogs}
     for catalog in catalogs:
         code = catalog["locale"]

@@ -39,6 +39,8 @@ worker-join.txt
 
 # Local logs, test artifacts, and backups
 e2e/
+!tests/e2e/
+tests/e2e/*.json
 artifacts/
 *.log
 *.bak

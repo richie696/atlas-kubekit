@@ -18,6 +18,13 @@ from pathlib import Path
 
 from enrollment import PairingError, decode_pairing_code, enroll
 
+VERSION_LIBRARY=Path(__file__).resolve().parent.parent/'lib'
+if not (VERSION_LIBRARY/'component_versions.py').is_file():
+    VERSION_LIBRARY=Path(__file__).resolve().parent/'scripts/lib'
+sys.path.insert(0,str(VERSION_LIBRARY))
+from component_versions import pinned
+PINNED_KUBERNETES=pinned()['kubernetes']
+
 STORAGE_SOURCE = Path(__file__).with_name('storage.py').read_text()
 
 REMOTE = r'''python3 - <<'PY'
@@ -453,7 +460,7 @@ def main():
                 role_checks = [
                     ('containerd active', d['containerd'] == 'active', d['containerd'] or 'not installed', 'rerun 02 base node setup and inspect containerd'),
                     ('kubelet active', d['kubelet'] == 'active', d['kubelet'] or 'not installed', 'rerun 02 Kubernetes node setup and inspect kubelet'),
-                    ('Kubernetes v1.36.5', 'v1.36.5' in d['kubelet_version'], d['kubelet_version'] or 'not installed', 'align kubelet with the v0.1.0 Kubernetes version and inspect package pins'),
+                    ('Kubernetes '+PINNED_KUBERNETES, d['kubelet_version']=='Kubernetes '+PINNED_KUBERNETES, d['kubelet_version'] or 'not installed', 'align kubelet with the current component catalog and inspect package pins'),
                     ('containerd systemd cgroup', bool(d['cgroup']), 'SystemdCgroup=true' if d['cgroup'] else 'not verified', 'repair /etc/containerd/config.toml and restart containerd in a maintenance window'),
                     ('Kubernetes kernel setup', d['sysctl'] == 'yes' and d['modules'] == 'yes',
                      'sysctl and modules are ready' if d['sysctl'] == 'yes' and d['modules'] == 'yes' else f"sysctl={d['sysctl']} modules={d['modules']}",

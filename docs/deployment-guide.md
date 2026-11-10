@@ -1,5 +1,9 @@
 # Atlas KubeKit — Ubuntu 24.04 Kubernetes 集群部署与运维指南
 
+0.3.0 新增统一 JSON 配置，可先通过 `02 --config-check FILE` 只读校验，再在已登记节点上使用
+`02 --config FILE`；完整格式、配置差异检查及当前验证边界见 [统一集群配置](cluster-configuration.md)。
+普通交互登记和已有 0.2.0 部署流程继续保留；该入口不用于存量集群升级或拓扑变更。
+
 ## 目录
 
 - [从新装系统到可用集群的流程图](#从新装系统到可用集群的流程图)
@@ -175,6 +179,10 @@ CP 和 worker 都可以选择 `none` 使用系统盘；CP 的 etcd 数据仍位�
 系统盘至少 10 GiB 可用空间只是安装前的最低余量，实际容量和 I/O 性能需按负载规划。worker 的 `/os_data` 不会自动接管 containerd 镜像或 kubelet 数据，也不等于已经提供 Kubernetes 持久卷。
 
 全部 LB 安装 HAProxy/Keepalived：HAProxy 将 API TCP `6443` 转发给登记的 CP；Keepalived 在 LB 之间维护 API VIP。阶段二还可选填写一个独立的应用入口 VIP；它会由 Keepalived 管理，并从每个 Kubernetes 节点检查 ARP 所有权。两个 VIP 都应先在网络管理层预留；当前测试 API VIP 是 `10.20.1.9`，应用入口 VIP 使用 `10.20.1.20`。留空应用 VIP 不改变原有部署行为。
+
+阶段二还可选择填写一个本地 HTTP 镜像仓库 `host:port`；这不是 LB 配置。选择后，脚本在每个 CP/worker 节点先探测 `http://<host:port>/v2/`，只有探测通过才为精确的 registry authority 写入 `/etc/containerd/certs.d/<host:port>/hosts.toml`，能力限定为 `pull`/`resolve`。已有非 KubeKit 管理的冲突配置会 fail closed，不覆盖。首次 `config_path` 生效可能重启 containerd；只更新 `hosts.toml` 时不重启。留空跳过此配置，不删除此前已存在的节点 registry 文件。该字段保存在 root-only `cluster.conf`，后续 Phase 2 resume 会复用。
+
+提供的 registry endpoint 必须先由网络管理员做 DHCP/IPAM 地址保留，或使用稳定 DNS 名；本机当前 DHCP 地址、短期 Docker Desktop 地址或临时隧道地址不能当作长期默认值。脚本只证明逐节点 HTTP 可达，不替代对 registry 身份、网络 ACL、镜像签名和内容信任策略的评审。应用验收 manifests 使用占位符，由 `SENTINEL_E2E_REGISTRY_HOST=host:port` 显式渲染；脚本没有动态宿主 IP 默认值。
 
 应用 VIP 只预置地址，不会在基础集群部署时猜测 Gateway Service 的 NodePort。Envoy Gateway 和业务 HTTPRoute/Gateway 建立后，使用 `05-manage-lb.sh` 为应用 VIP 增加 HAProxy 转发规则（通常是 TCP 443 到所有 K8s 节点的实际 HTTPS NodePort）。DNS 记录、客户端信任的 TLS CA、上游网络 ACL 仍需由对应的 DNS/PKI/网络系统配置。见 [LB 入口验证与部署缺口记录](validation/lb-ingress-deployment-gaps.md)。
 
@@ -390,7 +398,7 @@ sudo bash ~/01-prepare-node.sh
 | [04-verify-cluster.sh](../04-verify-cluster.sh) | 按 hostname 和本机工具展示巡检、健康检查及可选功能验证菜单 |
 | [setup-k8s-node.sh](../scripts/stages/setup-k8s-node.sh) | containerd、数据盘和 Kubernetes 包安装 |
 | [setup-lb.sh](../scripts/stages/setup-lb.sh) | HAProxy 与 Keepalived 配置 |
-| [configure-registry-mirror.sh](../scripts/stages/configure-registry-mirror.sh) | containerd 镜像代理配置 |
+| [configure-registry-mirror.sh](../scripts/stages/configure-registry-mirror.sh) | containerd 的 registry.k8s.io 镜像代理及可选本地 HTTP registry trust |
 | [init-cluster.sh](../scripts/stages/init-cluster.sh) | cp1 的 kubeadm 初始化 |
 | [install-cilium.sh](../scripts/stages/install-cilium.sh) | Cilium 安装与就绪检查 |
 | [create-join-credentials.sh](../scripts/stages/create-join-credentials.sh) | 生成短期 control-plane 和 worker join 凭据 |
@@ -507,7 +515,7 @@ ip -o -4 addr show | grep '10.20.1.9/32' || true
 curl -kfsS --connect-timeout 5 https://10.20.1.9:6443/readyz
 ```
 
-两个服务都应为 `active`，`/readyz` 应输出 `ok`。正常状态下 VIP **仅出现在一台 LB** 上；当前优先级下通常由 lb1 持有。HAProxy 的后端和连接状态也可在内网访问 `http://10.20.1.20:7000` 与 `http://10.20.1.21:7000`。仅看到 TCP 6443 监听不足以证明 API 健康，应以 `/readyz` 和下面的 `kubectl` 查询为准。
+两个服务都应为 `active`，`/readyz` 应输出 `ok`。正常状态下 VIP **仅出现在一台 LB** 上；当前优先级下通常由 lb1 持有。HAProxy stats 默认只监听 LB 本机 `127.0.0.1:7000`，避免未认证管理页面暴露到业务网；远程检查可使用 `ssh -L 7000:127.0.0.1:7000 <lb-user>@<lb-ip>`，再访问 `http://127.0.0.1:7000/`。若部署阶段显式配置了受控的管理 IPv4 CIDR，stats 会在 `*:7000` 监听并只允许该来源网段。仅看到 TCP 6443 监听不足以证明 API 健康，应以 `/readyz` 和下面的 `kubectl` 查询为准。
 
 ### 4. 在 cp1、cp2 或 cp3 查看整个 Kubernetes 集群
 

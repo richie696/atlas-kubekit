@@ -4,7 +4,7 @@ Atlas KubeKit（By Atlas Richie）以 root/sudo 权限修改服务器。安全�
 
 ## 漏洞报告
 
-发布到 GitHub 后，请优先通过仓库 **Security → Advisories → Report a vulnerability** 私密报告。该入口需要仓库维护者先启用 Private vulnerability reporting，仓库当前尚未发布，不代表入口已经存在。
+请优先通过仓库 **Security → Advisories → Report a vulnerability** 私密报告。该入口需要仓库维护者启用 Private vulnerability reporting；是否可用以仓库实际设置为准。
 
 若私密报告入口不可用，可先提交不含漏洞细节的 Issue 请求维护者提供私密联系渠道。不要在公开 Issue、PR 或附件中披露利用步骤、真实凭据或敏感配置。
 
@@ -14,7 +14,7 @@ GitHub 启用说明：[Configuring private vulnerability reporting](https://docs
 
 ## 支持范围
 
-目前尚未发布正式版本，优先检查最新默认分支中的可复现问题。Ubuntu 24.04 amd64 是当前部署目标；历史报告不能证明所有环境都已安全验证。第三方组件漏洞应同时追踪上游公告与实际安装版本。
+当前发布版本为 0.3.0；安全报告请标明实际版本、commit 和受影响配置。Ubuntu 24.04 amd64 是当前部署目标；历史报告不能证明所有环境都已安全验证。第三方组件漏洞应同时追踪上游公告与实际安装版本。
 
 ## 部署涉及的权限与状态
 

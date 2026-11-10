@@ -78,14 +78,17 @@ def main():
     decode.add_argument('code')
     register = commands.add_parser('enroll')
     register.add_argument('--address', required=True)
-    register.add_argument('--code', required=True)
+    codes=register.add_mutually_exclusive_group(required=True)
+    codes.add_argument('--code')
+    codes.add_argument('--code-stdin',action='store_true')
     register.add_argument('--public-key-file', required=True)
     args = parser.parse_args()
     try:
         if args.command == 'decode':
             result = decode_pairing_code(args.code)
         else:
-            result = enroll(args.address, args.code, Path(args.public_key_file).read_text())
+            code=sys.stdin.readline(128).strip() if args.code_stdin else args.code
+            result = enroll(args.address, code, Path(args.public_key_file).read_text())
         print('\t'.join(result))
     except (ValueError, OSError) as exc:
         print(str(exc), file=sys.stderr)

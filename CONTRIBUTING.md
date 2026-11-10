@@ -15,7 +15,9 @@
 
 ## 文件职责
 
-- 根目录 01～04 是用户入口，名称和顺序保持稳定。
+- 根目录 01～06 是用户入口，名称保持稳定；菜单与 CLI 复用同一能力契约。
+- 02 的向导编排模块位于 `scripts/deploy/`，06 按 `scripts/operations/` 的能力边界组织；规则、采集、执行、报告分开，避免继续向入口脚本堆积实现。
+- 组件版本的唯一默认目录是 `scripts/lib/component-versions.json`，Bash 和 Python 从同一目录读取；历史验证版本不随默认值改写。
 - `VERSION` 是项目版本的唯一维护来源，`scripts/update-version.py` 将版本同步到 Bash 脚本；不手工修改生成区块。
 - `scripts/stages/` 是 02 的内部部署步骤；02 负责角色判定、参数和分发。
 - `scripts/stages/storage.py` 是通用磁盘检测的唯一源码；修改后运行 `python3 scripts/sync-storage.py` 同步 01 的独立运行载荷，并用 `--check` 验证。
@@ -30,7 +32,7 @@
 2. 使用 Bash，保持 `set -euo pipefail` 等既有错误处理；对命令参数正确引用，避免 `eval`、执行远端配置中的任意文本。
 3. 涉及磁盘、SSH、网络、身份或重启的变化，必须说明确认点、失败保留现场及恢复方式。
 4. 不自动格式化有签名/分区/挂载的数据盘，不把用户私钥传播到其他节点。
-5. 修改 03/04 提示时同时维护中英文；工具原生输出与配置值保持原样。
+5. 新提示通过 messageKey 维护英文、简体与繁体目录；工具原生输出与配置值保持原样。
 6. 外部组件版本调整需同时追踪编排器、内部脚本、文档及兼容条件，不能仅修改显示文案。
 7. 更新 README/完整指南和 CHANGELOG；保留 MIT 许可及 SPDX 标识。
 8. 版本变更运行 `python3 scripts/update-version.py <版本>` 并将 VERSION 与生成脚本一同提交；提交前用 `--check` 确认一致，发布规则见 [版本管理指南](docs/versioning.md)。
@@ -46,6 +48,11 @@ for script in ./*.sh ./scripts/stages/*.sh; do
   bash -n "$script" || exit 1
 done
 ```
+
+统一检查入口为 `python3 scripts/validate.py`，开发测试需要 Python 3.9+ 和 PyYAML 6.x。
+它检查所有 Shell/Python 源码、语言目录、14 项版本元数据和可移植回归，不访问 Proxmox 或集群。
+GitHub CI 配置同样不含部署凭据。真实环境测试另见 [可销毁环境驱动](tests/e2e/README.md)：
+核对 VM ID/标签和归属，单批运行，完成后释放自有测试资源，不并行保留多套完整测试集群。
 
 涉及 02 源码路径时，需在可销毁的 Ubuntu 测试环境验证新仓库布局、旧平铺布局、缺文件失败及安装目录重启续跑。涉及安装行为时，记录 01→02 的新节点部署、失败重跑、03 相关插件功能和 04 对应角色检查。
 

@@ -24,6 +24,7 @@ the existing installer; they do not deploy or restart the real LB pair.
 | Rerun restarted unchanged services or lost routes | Preserve managed routes/VIPs and avoid restarts when config bytes and service state match | Rerun and route-preservation test |
 | Check-only could accidentally apply changes | No package install, enable, restart or managed file write | Check-only file and command assertions |
 | Standby could not bind an application VIP it did not yet own | Persist and apply `net.ipv4.ip_nonlocal_bind=1`; restore the previous kernel value/file on failure | Initial application setting and failed sysctl/config/start rollback; live listener/failover and reboot checks |
+| Unauthenticated stats page listened on every interface | Default to loopback; require an explicit management IPv4 CIDR for remote access and reject default/IPv6 networks | Default bind, allowed-CIDR ACL, invalid CIDR rejection before APT |
 
 ## Commands and evidence boundary
 
@@ -33,7 +34,7 @@ bash -n 02-deploy-cluster.sh scripts/stages/setup-lb.sh scripts/stages/join-node
 git diff --check
 ```
 
-Local result: all 13 test methods passed, including their parameterized failure
+Local result: all 15 test methods passed, including their parameterized failure
 scenarios. Bash syntax, Python parsing, locale JSON and newly added translation
 keys/formatting passed. ShellCheck was unavailable in the local environment.
 

@@ -17,7 +17,9 @@ def tr(key, *values):
     roots = []
     if os.environ.get('ATLAS_LOCALES_DIR'):
         roots.append(Path(os.environ['ATLAS_LOCALES_DIR']))
-    roots.extend((Path(__file__).resolve().parents[2] / 'locales', Path('/usr/local/lib/k8s-deploy/locales')))
+    if '__file__' in globals():
+        roots.append(Path(__file__).resolve().parents[2] / 'locales')
+    roots.append(Path('/usr/local/lib/k8s-deploy/locales'))
     message = None
     for root in roots:
         for code in (locale, 'en'):
@@ -26,7 +28,7 @@ def tr(key, *values):
                          if candidate.stem.replace('-', '_').casefold() == normalized), root / f'{code}.json')
             try:
                 message = json.loads(path.read_text(encoding='utf-8'))['messages'].get(key)
-            except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            except (OSError, KeyError, TypeError, json.JSONDecodeError, UnicodeError):
                 continue
             if message is not None:
                 break

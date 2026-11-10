@@ -17,6 +17,7 @@ import sys
 import tempfile
 
 STORAGE_SOURCE = None
+EXPECTED_KUBERNETES_VERSION = None
 
 
 def run(*args, timeout=30):
@@ -363,7 +364,7 @@ class Repair:
         if self.role != 'lb':
             for service in ('containerd', 'kubelet'):
                 run('systemctl', 'is-active', service)
-            if run('kubelet', '--version') != 'Kubernetes v1.36.5':
+            if EXPECTED_KUBERNETES_VERSION is None or run('kubelet', '--version') != 'Kubernetes '+EXPECTED_KUBERNETES_VERSION:
                 raise ValueError('Kubelet version differs from the current deployment baseline')
             if run('swapon', '--noheadings'):
                 raise ValueError('Swap is active; handle it in a maintenance window')

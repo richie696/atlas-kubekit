@@ -15,7 +15,7 @@ import unittest
 
 
 REPO = Path(__file__).resolve().parents[1]
-BASH = next((str(p) for p in (Path('/opt/homebrew/bin/bash'), Path('/usr/bin/bash')) if p.exists()), 'bash')
+from tests.shell import BASH
 STUB = r'''#!/usr/bin/env python3
 import json, os, pathlib, shutil, signal, stat, sys
 root = pathlib.Path(os.environ['LB_TEST_ROOT'])
@@ -105,6 +105,16 @@ class InstallerTests(unittest.TestCase):
         for path in ('/etc/', '/usr/local/libexec/', '/usr/bin/killall', '/run/haproxy', '/var/backups/atlas-kubekit/lb-setup'):
             source = source.replace(path, str(self.root) + path)
         self.write('setup-lb.sh', source)
+        for name in ('stage-runtime.sh', 'packages.sh', 'i18n.sh', 'i18n.py'):
+            shared = (REPO / 'scripts/lib' / name).read_text()
+            if name == 'packages.sh':
+                shared = shared.replace('/var/lib/dpkg/', str(self.root / 'var/lib/dpkg') + '/')
+                shared = shared.replace('/var/lib/apt/', str(self.root / 'var/lib/apt') + '/')
+                shared = shared.replace('/var/cache/apt/', str(self.root / 'var/cache/apt') + '/')
+            self.write('scripts/lib/' + name, shared)
+        for name in ('var/lib/dpkg', 'var/lib/apt/lists', 'var/cache/apt/archives'):
+            (self.root / name).mkdir(parents=True, exist_ok=True)
+        shutil.copytree(REPO / 'locales', self.root / 'locales')
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
                         LB_TEST_ROOT=str(self.root), TMPDIR=str(self.root / 'tmp'),
                         AUTH_PASS='Shared01', IFACE='enp6s18', VIP='10.20.1.9',
@@ -149,9 +159,26 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('10.20.1.20', cfg)
         self.assertEqual(self.state()['nonlocal_bind'], '1')
         self.assertIn('net.ipv4.ip_nonlocal_bind = 1', (self.root / 'etc/sysctl.d/99-atlas-kubekit-lb.conf').read_text())
+        haproxy = (self.root / 'etc/haproxy/haproxy.cfg').read_text()
+        self.assertIn('bind 127.0.0.1:7000', haproxy)
+        self.assertNotIn('bind *:7000', haproxy)
         self.assertEqual(self.state()['enabled'], dict(haproxy=True, keepalived=True))
         self.run_setup(True, '--slave', APP_INGRESS_VIP='10.20.1.20')
         self.assertIn('state BACKUP', (self.root / 'etc/keepalived/keepalived.conf').read_text())
+
+    def test_stats_listener_can_be_explicitly_allowlisted(self):
+        self.run_setup(LB_STATS_ALLOWED_CIDR='10.20.1.128/25')
+        haproxy = (self.root / 'etc/haproxy/haproxy.cfg').read_text()
+        self.assertIn('bind *:7000', haproxy)
+        self.assertIn('acl stats_source_allowed src 10.20.1.128/25', haproxy)
+        self.assertIn('http-request deny if !stats_source_allowed', haproxy)
+
+    def test_invalid_stats_cidr_is_rejected_before_apt(self):
+        for cidr in ('not-a-cidr', '0.0.0.0/0', '2001:db8::/64'):
+            with self.subTest(cidr=cidr):
+                self.set_state()
+                self.run_setup(False, LB_STATS_ALLOWED_CIDR=cidr)
+                self.assertFalse(any(c[0] == 'apt-get' for c in self.state()['calls']))
 
     def test_repeat_does_not_restart_and_preserves_routes(self):
         self.run_setup(APP_INGRESS_VIP='10.20.1.20')

@@ -20,6 +20,7 @@ spec = importlib.util.spec_from_file_location('atlas_audit', HERE / 'check-clust
 audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit)
 NODE_SOURCE = (HERE / 'repair-node.py').read_text().replace('STORAGE_SOURCE = None', 'STORAGE_SOURCE = ' + repr(audit.STORAGE_SOURCE), 1)
+NODE_SOURCE=NODE_SOURCE.replace('EXPECTED_KUBERNETES_VERSION = None','EXPECTED_KUBERNETES_VERSION = '+repr(audit.PINNED_KUBERNETES),1)
 ITEMS = {
     'hosts': 'Repair all hostname/private-IP mappings; preserve unrelated hosts entries',
     'node-keys': 'Create/repair unique node keys and mutual public-key trust; retain administrator keys',

@@ -2,11 +2,11 @@
 
 **By Atlas Richie** · GitHub repository: `atlas-kubekit`
 
-**当前版本**：[`0.2.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.2.0) · **发布日期：2026-10-22** · [版本来源](VERSION) · [本版变更](CHANGELOG.md#020--2026-10-22)。
+**当前版本**：[`0.3.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.3.0) · **发布日期：2026-11-10** · [版本来源](VERSION) · [本版变更](CHANGELOG.md#030--2026-11-10) · [发布验收](docs/validation/release-0.3.0.md)。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-面向 **Ubuntu Server 24.04 amd64** 的 Kubernetes 部署与运维脚本集。通过交互选项完成主机准备、内网集群编排、插件安装、巡检，以及 HAProxy/Keepalived 日常管理，减少重复的手工配置。提供 01～05 五个入口，适合逐步搭建并维护自有内网集群。
+面向 **Ubuntu Server 24.04 amd64** 的 Kubernetes 部署与运维脚本集。通过交互选项完成主机准备、高可用集群部署、16 项插件、巡检、HAProxy/Keepalived 管理和持续运维。01～06 六个入口覆盖“准备、部署、管理、备份、变更、诊断、离线交付”，减少重复手工配置。
 
 Interactive Kubernetes deployment and operations toolkit for Ubuntu 24.04: node preparation, HA cluster deployment, audits and repairs, 16 add-ons, role-based checks, and HAProxy/Keepalived management with extensible locale catalogs.
 
@@ -14,6 +14,7 @@ Interactive Kubernetes deployment and operations toolkit for Ubuntu 24.04: node 
 
 - [能力与适用范围](#能力与适用范围)
 - [0.2.0 新特性](#020-新特性)
+- [0.3.0 新特性](#030-新特性)
 - [部署流程](#部署流程)
 - [运行要求](#运行要求)
 - [快速开始](#快速开始)
@@ -35,11 +36,12 @@ Interactive Kubernetes deployment and operations toolkit for Ubuntu 24.04: node 
 - **03：可选插件**。16 项交互菜单，统一下载源与 Kubernetes/Chart 版本检查，覆盖监控、日志、GitOps、备份、NFS/Longhorn 存储、Headlamp 控制台、策略、扩缩容、Gateway 和 Ingress。
 - **04：检查与验证**。按节点角色展示连续编号菜单，检查主机、LB、控制面、运行时和插件；网络/PVC 功能检查需确认后创建临时资源。
 - **05：LB 运维管理（试用）**。实时查看自有 LB 服务与配置状态，管理受控业务 VIP 和 HAProxy 端口转发规则；外部 LB 单独登记。详见 [LB 运维管理器说明](docs/lb-manager.md)。
+- **06：持续运维**。统一配置/漂移、受控计划与 CAS 锁、安全交接、控制面加密备份和隔离演练、worker 生命周期、补丁升级、诊断包、保护证据与锁定离线物料。
 - 独立数据盘可选：已用于集群组件的挂载自动保留；其他已挂载的独立空间先询问，确认后保留原文件系统和文件，在专属子目录存放数据；空白盘按计划初始化，没有独立盘则使用系统盘。
 - 外置 messageKey 语言目录提供英文、简体中文和繁体中文，并支持扩展新语言；主要交互已迁移，部分诊断与内部阶段输出仍为原有语言。
 - 保存部署计划和完成标记，失败后可在修复问题后重跑；已有状态冲突时会停止，重跑不保证自动修复所有故障。
 
-当前锁定 Kubernetes **v1.36.5**、Cilium **1.20.2**。版本变更应同时检查编排脚本与内部脚本；仅改一个变量不代表支持了新版本。插件 Chart 在安装时查询版本并供用户确认。
+新装默认 Kubernetes **v1.36.6**、Cilium **1.20.4**，由统一组件版本目录定义。更新工具不会自动升级已有集群；集群和插件升级分别通过明确操作执行。插件 Chart 在安装时查询版本并供用户确认。
 
 首发版本的历史验证来自特定实验室环境，未覆盖所有云厂商、配置组合、容量和灾备场景；验证记录与当前源码的差异见各报告。外部镜像、软件包和 Chart 必须实际可达。
 
@@ -118,6 +120,39 @@ sudo bash ./04-verify-cluster.sh --lang zh_CN
 
 增加语言时新建一个 JSON，填写 `locale`、`displayName`、`fallback` 与同名 messageKey 的翻译，保留格式占位符。主要交互已迁移；02 的部分详细诊断、审计/修复程序及内部阶段仍待迁移，第三方命令输出保留原样。架构和迁移清单见 [国际化说明](docs/internationalization.md)。
 
+## 0.3.0 新特性
+
+0.3.0 相对 v0.2.0 新增六类持续运维能力。各项实现与真实验收分别记录，
+完整离线首次/重跑、五节点补丁升级和 LB 重启恢复已通过本轮隔离验证，见 [执行证据](docs/validation/operations-e2e-20261110-execution.md)。
+最终能力、180 项跨平台回归、资源回收和使用边界汇总见 [0.3.0 开发交付记录](docs/validation/operations-delivery-0.3.0.md)。
+
+| 运维任务 | 本版提供的选项 | 使用边界 |
+| --- | --- | --- |
+| 安全交接 | 检查临时授权与配对服务；独立新通道验证保留账号后执行收尾，失败回退 | 只删除工具自己的授权，不改管理员自建规则 |
+| 备份与恢复 | age 加密配置/etcd、完整性校验、恢复计划、隔离目录恢复和实际 etcd 启动演练 | 生产原地恢复、卷和应用数据库恢复须独立方案 |
+| 配置与变更 | JSON 模板/导入导出、revision、漂移、SHA 计划、预览/确认/执行/继续及 CAS 锁 | 仅接受已实现的专属操作，不自动应用任意配置差异 |
+| 节点与组件 | worker 加入/维护/退出/替换，Kubernetes/Cilium 同 minor 补丁升级，PDB 与存储保护 | 不自动变更控制面成员；失败停止，不盲目降级 |
+| 报告与保护证据 | JSON/文本、9 类白名单诊断包，卷/应用的外部加密备份证据登记 | 密文 SHA 和资源 UID 匹配不代表应用恢复通过 |
+| 锁定交付物 | 完整依赖闭包、签名离线 APT、镜像 digest、Chart/工具/源码 SHA，企业公开 CA 配置 | 首批 Ubuntu 24.04 amd64 基座；插件/业务镜像及认证凭据独立管理 |
+
+```bash
+bash ./06-maintain-cluster.sh --lang zh_CN
+bash ./06-maintain-cluster.sh --lang zh_CN --config-template \
+  --export-file "$HOME/cluster.example.json"
+bash ./06-maintain-cluster.sh --lang zh_CN --report \
+  --target ubuntu@cp1.example --sudo --output-dir "$HOME/atlas-reports"
+```
+
+菜单与 CLI 共用执行契约。变更先生成绑定集群身份、有效期和当前事实的计划，再用完整计划 ID
+确认执行。中断保留状态及锁，确认旧作业停止后显式恢复；不通过超时自动抢占。
+02 首次/已完成部署、02 审计及 04 选中检查生成统一摘要；原始特权输出不会复制进常规报告。
+05 的事务和主机预留在重启后仍存在，回退遇到第三方修改会停止。
+
+新装默认组件由 `scripts/lib/component-versions.json` 统一定义：Kubernetes v1.36.6、
+Cilium 1.20.4、Helm v3.18.6、cri-tools v1.36.0；更换工具源码不会自动升级已有集群。
+详细步骤见 [06 操作指南](docs/operations-guide.md)、[统一配置](docs/cluster-configuration.md)、
+[离线与企业仓库](docs/offline-delivery.md)及[数据保护](docs/data-protection.md)。
+
 ## 部署流程
 
 ```mermaid
@@ -145,7 +180,7 @@ flowchart TD
 | 节点命名 | `lb1/lb2/...`、`cp1/cp2/...`、`w1/w2/...`；至少包含 `lb1` 和 `cp1`，worker 可选 |
 | 网络 | 每台唯一且可达的内网 IP；节点互通；当前 HAProxy/Keepalived VIP 方案要求 LB 支持同二层 VRRP/ARP |
 | 管理账号 | 全节点使用相同的 SSH 管理员用户名；有 sudo 权限及控制台恢复通道 |
-| 外部下载 | 能访问 Ubuntu/Kubernetes 包源、容器镜像与 Helm 仓库；项目不提供通用离线镜像包 |
+| 依赖来源 | 默认访问 Ubuntu/Kubernetes 包源、容器镜像与 Helm 仓库；也可预先构建同平台基座离线物料，插件和业务镜像另行准备 |
 | 高可用拓扑 | HA 测试示例为 2 LB + 3 CP + 3 worker；单 LB 或单 CP 部署不具备对应层高可用能力 |
 
 云服务器可选择 `keep` 网络模式保留现有 IP。**保留 IP 不代表云网络支持当前 VIP 方案**：若云平台不允许 VRRP/ARP 漂移，需要先设计相应 API 入口方案；本工具不自动适配云负载均衡。
@@ -302,16 +337,17 @@ bash ./05-manage-lb.sh
 ## 升级现有环境
 
 1. 备份 `/var/lib/k8s-deploy/` 中的部署状态、节点清单和相关 LB 配置；若存在自动续跑任务，先确认它的状态。不要在续跑中途只替换部分文件。
-2. 将完整 `0.2.0` 项目放入新的目录，查询 `--version`。旧的服务器安装副本不会随仓库自动更新。
+2. 将完整 `0.3.0` 项目放入新的目录，查询 `--version`。旧的服务器安装副本不会随仓库自动更新。
 3. 旧集群先执行 `02 --check`，需要修复时先看 `--repair --dry-run` 计划，再选择具体项目。版本升级本身不执行 kubeadm、不升级 Kubernetes 或插件，也不迁移数据。
 4. LB 安装脚本重跑保留受管业务路由/VIP；状态或标记损坏时会停止，应先核对备份。生产环境仍需安排可接受短暂切换的维护窗口。
 5. 插件按名称选择：Headlamp 插入首位后编号改变。已有 Helm release 默认跳过，明确选择升级才应用新版本/下载源。
+6. 使用 06 管理已有集群时，配置填写当前实际版本和节点，不直接采用新装模板默认值。先巡检、核对备份，再预览并确认专属变更计划；不为升级重跑 01/02。具体见 [持续运维指南](docs/operations-guide.md)。
 
 与 `0.1.0` 相比，正常交互需要外置语言目录和共享运行库，旧的单文件传输方式必须调整。`0.x` 阶段的行为变化以 [CHANGELOG](CHANGELOG.md) 为准，不视为稳定版兼容承诺。
 
 ## 版本管理
 
-`VERSION` 是项目版本的唯一来源，当前发布版本为 `0.2.0`，对应 tag 为 `v0.2.0`。各部署入口和内部阶段 Bash 脚本内嵌自动同步的版本，版本查询无需读取外部 VERSION；正常交互仍需完整运行依赖。
+`VERSION` 是源码版本的唯一来源，当前正式版本为 `0.3.0`，对应 tag 为 `v0.3.0`。各部署入口和内部阶段 Bash 脚本内嵌自动同步的版本，版本查询无需读取外部 VERSION；正常交互仍需完整运行依赖。
 
 ```bash
 # 查询实际脚本版本，无需 sudo
@@ -323,7 +359,7 @@ python3 scripts/update-version.py
 python3 scripts/update-version.py --check
 ```
 
-01～05 和全部内部阶段脚本均支持 `--version`/`-V`。版本不是部署成功标记，也与 Kubernetes/Cilium 版本分开；源码更新后仍需确认服务器实际副本。
+01～06 和全部内部阶段脚本均支持 `--version`/`-V`。版本不是部署成功标记，也与 Kubernetes/Cilium 版本分开；源码更新后仍需确认服务器实际副本。
 
 递增规则、版本同步和 `vX.Y.Z` tag 发布流程见 [版本管理指南](docs/versioning.md)。版本变更和 tag 不由部署脚本自动完成。
 
@@ -336,11 +372,15 @@ atlas-kubekit/
 ├── 03-install-addons.sh        # 可选插件菜单
 ├── 04-verify-cluster.sh        # 按角色巡检菜单
 ├── 05-manage-lb.sh             # 自有 HAProxy / Keepalived 运维菜单
+├── 06-maintain-cluster.sh      # 持续运维、计划执行、隔离恢复与锁定交付
 ├── VERSION                    # 源码版本的唯一维护来源
 ├── locales/                   # en / zh_CN / zh_TW messageKey 语言目录
 ├── scripts/
-│   ├── lb/                     # LB 状态与受管配置协调器
-│   ├── lib/                    # Bash / Python 国际化接口
+│   ├── deploy/                # 02 配置、配对、阶段、物料和验收模块
+│   ├── lb/                    # LB 协调器、远端事务和原子文件发布
+│   ├── operations/            # 按能力划分配置、执行、生命周期、物料和数据保护
+│   ├── lib/                   # 国际化、组件版本、主机互斥与受限归档
+│   ├── validate.py            # 无环境副作用的源码与可移植回归检查
 │   ├── addons/                 # 插件下载源与兼容性规则源码
 │   ├── sync-storage.py         # 同步 01 的存储辅助载荷
 │   ├── sync-addon-sources.py   # 同步 03 的下载辅助载荷
@@ -353,9 +393,10 @@ atlas-kubekit/
 │   ├── internationalization.md # 语言目录扩展与迁移清单
 │   ├── lb-manager.md          # 05 运维操作与边界
 │   └── validation/            # 历史实验室验证摘要与限制
-├── tests/                     # LB / 编排与主机续跑回归
+├── tests/                     # 规则/协议/故障回归；e2e/ 为显式隔离环境驱动
 ├── .github/
 │   ├── ISSUE_TEMPLATE/        # 缺陷与功能请求模板
+│   ├── workflows/validate.yml # Ubuntu/macOS、Python 3.9/3.12 检查
 │   └── pull_request_template.md
 ├── LICENSE
 ├── CONTRIBUTING.md

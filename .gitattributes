@@ -1,7 +1,2 @@
-* text=auto
-*.sh text eol=lf
-*.py text eol=lf
-*.md text eol=lf
-*.yml text eol=lf
-*.yaml text eol=lf
-LICENSE text eol=lf
+# Preserve the upstream license bytes and published SHA-256, including its final blank line.
+licenses/Cilium.txt whitespace=-blank-at-eof

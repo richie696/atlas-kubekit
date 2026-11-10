@@ -6,7 +6,7 @@
 
 - 工程名称：**Atlas KubeKit**
 - GitHub 仓库名称：`atlas-kubekit`
-- 当前版本：[`0.2.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.2.0)，发布日期为 2026-10-22，tag 为 `v0.2.0`；版本号以 [VERSION](../VERSION) 为准，比较基线为 `v0.1.0`。
+- 当前正式版本：[`0.3.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.3.0)，发布日期为 2026-11-10，tag 为 `v0.3.0`，比较基线为 `v0.2.0`；验收见 [发布记录](validation/release-0.3.0.md)，源码版本以 [VERSION](../VERSION) 为准。
 - Git 远程地址：`git@github.com:richie696/atlas-kubekit.git`
 - 品牌署名：**By Atlas Richie**
 - MIT 版权署名：**Atlas Richie**
@@ -22,7 +22,7 @@ GitHub description 可直接复制下面一行。该文字仅保存在文档中�
 - [ ] 确认 LICENSE 的版权署名与年份；原创文件使用 MIT，第三方材料保留相应来源和许可。
 - [ ] 确认 README 的支持范围、版本锁定、示例 IP 和网络条件准确，未把实验室默认值当作通用云方案。
 - [ ] 审查所有待提交文件及 Git 历史，清除私钥、配对码、join token、certificate-key、kubeconfig、真实配置和备份；`.gitignore` 不会清除已跟踪内容或历史。
-- [ ] 确认根目录五个入口、`scripts/stages/`、`scripts/lib/`、`scripts/lb/`、`scripts/addons/` 和 `locales/` 一起发布，压缩包保留目录结构。
+- [ ] 确认根目录全部入口、`scripts/stages/`、`scripts/lib/`、`scripts/lb/`、`scripts/addons/`、`scripts/operations/` 和 `locales/` 一起发布，压缩包保留目录结构。
 - [ ] 按 [贡献指南](../CONTRIBUTING.md) 做静态检查；在可销毁环境进行 01→02 新节点部署和失败重跑。
 - [ ] 验证 02 新仓库路径、旧平铺包、缺文件错误及 systemd 重启续跑，特别是 machine-id 冲突引发的续跑。
 - [ ] 按变化范围验证 03 插件功能和 04 的 CP/LB/worker 菜单；说明未执行项，勿复用旧报告冒充新版本验收。
@@ -63,3 +63,7 @@ git commit -m "feat: introduce Atlas KubeKit deployment toolkit"
 4. 仓库版和服务器运行副本是两份文件。更新源码不等于已更新 `/usr/local/lib/k8s-deploy/` 或 systemd 使用的副本；升级前确认续跑状态、备份和回退方案。
 
 历史摘要中固定的日期、版本和源码 hash 应保留，不应改写为新版本已验证。格式或目录改动也需要明确其验证范围。
+
+正式源码包优先从已确认的 commit/tag 使用 `git archive` 生成，避免包含本地状态和未审查文件。
+macOS 手工通过 tar 传测试包时设置 `COPYFILE_DISABLE=1`，避免附带 AppleDouble 元数据；
+解压后的语言目录不得混入可见的非语言 JSON 文件。运行时忽略隐藏元数据文件，但损坏的正式语言包仍会报错。
