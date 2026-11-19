@@ -22,8 +22,8 @@
 - `scripts/stages/` 是 02 的内部部署步骤；02 负责角色判定、参数和分发。
 - `scripts/stages/storage.py` 是通用磁盘检测的唯一源码；修改后运行 `python3 scripts/sync-storage.py` 同步 01 的独立运行载荷，并用 `--check` 验证。
 - `scripts/addons/sources.py` 是 03 下载映射与镜像处理的唯一源码；修改后运行 `python3 scripts/sync-addon-sources.py` 同步独立载荷，并用 `--check` 验证，保证仅复制 03 仍可运行。
-- `docs/deployment-guide.md` 记录真实工作流程；安装成功与功能验证结论分别记录。
-- `docs/validation/` 保存有日期、版本、范围和限制的历史摘要。原始日志已清理，不应重新宣称可复查。
+- `docs/01-集群部署与配置/01-集群部署与运维指南.md` 记录真实工作流程；安装成功与功能验证结论分别记录。
+- `docs/` 按功能域组织，阅读入口为 `docs/00-文档导航.md`；各域内的验证记录保留日期、版本、范围和限制。历史已清理的原始日志不应重新宣称可复查。
 - 服务器副本位于 `/usr/local/lib/k8s-deploy/`。改路径时要考虑平铺旧包、systemd 重启续跑和跨节点分发。
 
 ## 修改约定
@@ -35,7 +35,7 @@
 5. 新提示通过 messageKey 维护英文、简体与繁体目录；工具原生输出与配置值保持原样。
 6. 外部组件版本调整需同时追踪编排器、内部脚本、文档及兼容条件，不能仅修改显示文案。
 7. 更新 README/完整指南和 CHANGELOG；保留 MIT 许可及 SPDX 标识。
-8. 版本变更运行 `python3 scripts/update-version.py <版本>` 并将 VERSION 与生成脚本一同提交；提交前用 `--check` 确认一致，发布规则见 [版本管理指南](docs/versioning.md)。
+8. 版本变更运行 `python3 scripts/update-version.py <版本>` 并将 VERSION 与生成脚本一同提交；提交前用 `--check` 确认一致，发布规则见 [版本管理指南](docs/08-项目维护与发布/02-版本管理规范.md)。
 
 ## 验证与证据
 

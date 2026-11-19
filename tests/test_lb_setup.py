@@ -105,6 +105,7 @@ class InstallerTests(unittest.TestCase):
         for path in ('/etc/', '/usr/local/libexec/', '/usr/bin/killall', '/run/haproxy', '/var/backups/atlas-kubekit/lb-setup'):
             source = source.replace(path, str(self.root) + path)
         self.write('setup-lb.sh', source)
+        self.write('lb-vip-metrics.py', (REPO / 'scripts/stages/lb-vip-metrics.py').read_text(), 0o755)
         for name in ('stage-runtime.sh', 'packages.sh', 'i18n.sh', 'i18n.py'):
             shared = (REPO / 'scripts/lib' / name).read_text()
             if name == 'packages.sh':
@@ -117,7 +118,7 @@ class InstallerTests(unittest.TestCase):
         shutil.copytree(REPO / 'locales', self.root / 'locales')
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
                         LB_TEST_ROOT=str(self.root), TMPDIR=str(self.root / 'tmp'),
-                        AUTH_PASS='Shared01', IFACE='enp6s18', VIP='10.20.1.9',
+                        AUTH_PASS='Shared01', LB_NAME='lb1', IFACE='enp6s18', VIP='10.20.1.9',
                         API_PORT='6443', VRRP_ID='51', CP_BACKENDS='cp1=10.20.1.13',
                         LB_PRIORITY='250', APP_INGRESS_VIP='')
 
@@ -129,7 +130,8 @@ class InstallerTests(unittest.TestCase):
     def set_state(self, fail='', active=False):
         previous = self.state() if (self.root / 'commands.json').exists() else {}
         (self.root / 'commands.json').write_text(json.dumps(dict(calls=[], attempts={}, fail=fail,
-            active=dict(haproxy=active, keepalived=active), enabled={}, nonlocal_bind=previous.get('nonlocal_bind','0'))))
+            active=dict(haproxy=active, keepalived=active, **{'atlas-lb-vip-metrics': active}),
+            enabled={}, nonlocal_bind=previous.get('nonlocal_bind','0'))))
 
     def state(self): return json.loads((self.root / 'commands.json').read_text())
 
@@ -162,7 +164,22 @@ class InstallerTests(unittest.TestCase):
         haproxy = (self.root / 'etc/haproxy/haproxy.cfg').read_text()
         self.assertIn('bind 127.0.0.1:7000', haproxy)
         self.assertNotIn('bind *:7000', haproxy)
-        self.assertEqual(self.state()['enabled'], dict(haproxy=True, keepalived=True))
+        self.assertIn('bind 127.0.0.1:8405', haproxy)
+        self.assertIn('http-request use-service prometheus-exporter if { path /metrics }', haproxy)
+        self.assertIn('option socket-stats', haproxy)
+        self.assertNotIn('bind *:8405', haproxy)
+        self.assertEqual(self.state()['enabled'], dict(haproxy=True, keepalived=True,
+                                                       **{'atlas-lb-vip-metrics': True}))
+        self.assertIn('atlas_keepalived_vip_owner',
+                      (self.root / 'etc/default/atlas-lb-vip-metrics').read_text() +
+                      (self.root / 'usr/local/libexec/atlas-kubekit/lb-vip-metrics.py').read_text())
+        env = (self.root / 'etc/default/atlas-lb-vip-metrics').read_text()
+        self.assertIn('# Managed by Atlas KubeKit', env)
+        self.assertIn('# Managed by Atlas KubeKit',
+                      (self.root / 'etc/systemd/system/atlas-lb-vip-metrics.service').read_text())
+        self.assertIn('# Managed by Atlas KubeKit: LB VIP metrics collector',
+                      (self.root / 'usr/local/libexec/atlas-kubekit/lb-vip-metrics.py').read_text())
+        self.assertIn('ATLAS_LB_VIPS=10.20.1.9,10.20.1.20', env)
         self.run_setup(True, '--slave', APP_INGRESS_VIP='10.20.1.20')
         self.assertIn('state BACKUP', (self.root / 'etc/keepalived/keepalived.conf').read_text())
 
@@ -172,6 +189,8 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('bind *:7000', haproxy)
         self.assertIn('acl stats_source_allowed src 10.20.1.128/25', haproxy)
         self.assertIn('http-request deny if !stats_source_allowed', haproxy)
+        self.assertIn('bind *:8405', haproxy)
+        self.assertIn('acl metrics_source_allowed src 10.20.1.128/25', haproxy)
 
     def test_invalid_stats_cidr_is_rejected_before_apt(self):
         for cidr in ('not-a-cidr', '0.0.0.0/0', '2001:db8::/64'):
@@ -213,7 +232,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual((self.root / 'etc/atlas-kubekit/lb-manager.json').stat().st_mode & 0o777, 0o600)
 
     def test_failures_restore_all_files_and_running_services(self):
-        for failure in ('restart:haproxy', 'restart:keepalived', 'installed:keepalived', 'installed:haproxy', 'install-state', 'listener', 'signal-commit', 'sysctl-write'):
+        for failure in ('restart:haproxy', 'restart:keepalived', 'restart:atlas-lb-vip-metrics',
+                        'installed:keepalived', 'installed:haproxy', 'install-state', 'listener', 'signal-commit', 'sysctl-write'):
             with self.subTest(failure=failure):
                 snapshot = self.old_files(); self.set_state(fail=failure, active=True)
                 self.run_setup(False)
@@ -230,7 +250,8 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(any(self.state()['active'].values()))
 
     def test_enable_and_candidate_failures_do_not_replace_configuration(self):
-        for failure in ('enable:haproxy', 'enable:keepalived', 'is-enabled:keepalived', 'candidate:keepalived'):
+        for failure in ('enable:haproxy', 'enable:keepalived', 'enable:atlas-lb-vip-metrics',
+                        'is-enabled:keepalived', 'candidate:keepalived'):
             with self.subTest(failure=failure):
                 snapshot = self.old_files(); self.set_state(fail=failure, active=True)
                 self.run_setup(False)

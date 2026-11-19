@@ -2,7 +2,7 @@
 
 **By Atlas Richie** · GitHub repository: `atlas-kubekit`
 
-**当前版本**：[`0.3.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.3.0) · **发布日期：2026-11-10** · [版本来源](VERSION) · [本版变更](CHANGELOG.md#030--2026-11-10) · [发布验收](docs/validation/release-0.3.0.md)。
+**当前版本**：[`0.3.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.3.0) · **发布日期：2026-11-10** · [本版变更](CHANGELOG.md#030--2026-11-10)。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -15,15 +15,16 @@ Interactive Kubernetes deployment and operations toolkit for Ubuntu 24.04: node 
 - [能力与适用范围](#能力与适用范围)
 - [0.2.0 新特性](#020-新特性)
 - [0.3.0 新特性](#030-新特性)
+- [0.4.0 候选发布](#040-候选发布监控与告警)
 - [部署流程](#部署流程)
 - [运行要求](#运行要求)
 - [快速开始](#快速开始)
   - [修复已运行的旧集群](#修复已运行的旧集群)
 - [升级现有环境](#升级现有环境)
-- [版本管理](#版本管理)
-- [项目结构](#项目结构)
+- [入口脚本](#入口脚本)
 - [变更记录](CHANGELOG.md)
-- [文档与验证记录](#文档与验证记录)
+- [产品概览与架构](docs/00-产品概览与架构.md)
+- [用户文档](#用户文档)
 - [贡献与问题反馈](#贡献与问题反馈)
 - [许可证](#许可证)
 
@@ -33,17 +34,18 @@ Interactive Kubernetes deployment and operations toolkit for Ubuntu 24.04: node 
 - **02：集群部署**。从任意已准备节点登记其他节点，配置 hosts 与双向 SSH 互信，检查克隆身份，按 `lbN/cpN/wN` 分工安装、初始化和加入集群。
 - **02：只读合规检查**。`--check` 按清单核对阶段一主机基线、阶段二节点依赖、SSH 主机/节点密钥唯一性及 hosts 映射；逐项报告不符合项与处理建议，不修改节点。
 - **02：旧集群基线修复**。`--repair` 提供六项修复菜单、只读预览、计划确认、逐节点备份和修复后审计；不用重新执行安装流程。
-- **03：可选插件**。16 项交互菜单，统一下载源与 Kubernetes/Chart 版本检查，覆盖监控、日志、GitOps、备份、NFS/Longhorn 存储、Headlamp 控制台、策略、扩缩容、Gateway 和 Ingress。
+- **03：可选插件**。17 项交互菜单，统一下载源与 Kubernetes/Chart 版本检查，覆盖监控、逐节点 Blackbox 探测、日志、GitOps、备份、NFS/Longhorn 存储、Headlamp 控制台、策略、扩缩容、Gateway 和 Ingress。
 - **04：检查与验证**。按节点角色展示连续编号菜单，检查主机、LB、控制面、运行时和插件；网络/PVC 功能检查需确认后创建临时资源。
-- **05：LB 运维管理（试用）**。实时查看自有 LB 服务与配置状态，管理受控业务 VIP 和 HAProxy 端口转发规则；外部 LB 单独登记。详见 [LB 运维管理器说明](docs/lb-manager.md)。
+- **05：LB 运维管理（试用）**。实时查看自有 LB 服务与配置状态，管理受控业务 VIP 和 HAProxy 端口转发规则；外部 LB 单独登记。详见 [LB 运维管理器说明](docs/03-负载均衡与业务入口/01-LB运维管理指南.md)。
 - **06：持续运维**。统一配置/漂移、受控计划与 CAS 锁、安全交接、控制面加密备份和隔离演练、worker 生命周期、补丁升级、诊断包、保护证据与锁定离线物料。
+- **0.4.0 候选发布：监控与告警**。部署配置可标记集群用途为 `monitoring` 或 `application`：监控集群部署 Prometheus、Alertmanager、Grafana、Loki 和通知服务；应用集群按需部署轻量采集 Agent，将指标和日志送往监控集群。整套方案仍在 Kubernetes 中运行；监控集群与应用集群是部署角色，便于后续集中接入多集群。候选回归 572 项通过、1 项环境限制跳过；正式版本仍为 0.3.0，0.4.0 尚未创建正式提交、tag 或 Release。详见[监控设计](docs/07-监控与预警/03-监控与告警功能设计.md)和[变更记录](CHANGELOG.md)。
 - 独立数据盘可选：已用于集群组件的挂载自动保留；其他已挂载的独立空间先询问，确认后保留原文件系统和文件，在专属子目录存放数据；空白盘按计划初始化，没有独立盘则使用系统盘。
 - 外置 messageKey 语言目录提供英文、简体中文和繁体中文，并支持扩展新语言；主要交互已迁移，部分诊断与内部阶段输出仍为原有语言。
 - 保存部署计划和完成标记，失败后可在修复问题后重跑；已有状态冲突时会停止，重跑不保证自动修复所有故障。
 
 新装默认 Kubernetes **v1.36.6**、Cilium **1.20.4**，由统一组件版本目录定义。更新工具不会自动升级已有集群；集群和插件升级分别通过明确操作执行。插件 Chart 在安装时查询版本并供用户确认。
 
-首发版本的历史验证来自特定实验室环境，未覆盖所有云厂商、配置组合、容量和灾备场景；验证记录与当前源码的差异见各报告。外部镜像、软件包和 Chart 必须实际可达。
+首发目标平台为 Ubuntu Server 24.04 amd64。其他云厂商、拓扑、容量和灾备方案需按实际环境设计；外部镜像、软件包和 Chart 必须能从部署节点访问。
 
 ## 0.2.0 新特性
 
@@ -72,7 +74,7 @@ Interactive Kubernetes deployment and operations toolkit for Ubuntu 24.04: node 
 | 配置变更 | 所有目标候选校验、备份、逐节点 reload、失败时尝试回滚 |
 | 外部 LB | 独立清单登记；尚未对接设备或云厂商管理 API |
 
-本版 05 为试用功能，尚不提供同端口域名/路径规则、TLS 终止、证书管理或多集群灾备编排。API 和应用入口可以共用这对 LB，也可以按故障隔离要求另建独立 LB。详见 [LB 管理说明](docs/lb-manager.md)。
+本版 05 为试用功能，尚不提供同端口域名/路径规则、TLS 终止、证书管理或多集群灾备编排。API 和应用入口可以共用这对 LB，也可以按故障隔离要求另建独立 LB。详见 [LB 管理说明](docs/03-负载均衡与业务入口/01-LB运维管理指南.md)。
 
 ### 审计、旧集群接管与存储保护
 
@@ -118,13 +120,11 @@ sudo bash ./03-install-addons.sh --lang en
 sudo bash ./04-verify-cluster.sh --lang zh_CN
 ```
 
-增加语言时新建一个 JSON，填写 `locale`、`displayName`、`fallback` 与同名 messageKey 的翻译，保留格式占位符。主要交互已迁移；02 的部分详细诊断、审计/修复程序及内部阶段仍待迁移，第三方命令输出保留原样。架构和迁移清单见 [国际化说明](docs/internationalization.md)。
+增加语言时新建一个 JSON，填写 `locale`、`displayName`、`fallback` 与同名 messageKey 的翻译，保留格式占位符。主要交互已迁移；02 的部分详细诊断、审计/修复程序及内部阶段仍待迁移，第三方命令输出保留原样。架构和迁移清单见 [国际化说明](docs/08-项目维护与发布/01-国际化与文本维护.md)。
 
 ## 0.3.0 新特性
 
-0.3.0 相对 v0.2.0 新增六类持续运维能力。各项实现与真实验收分别记录，
-完整离线首次/重跑、五节点补丁升级和 LB 重启恢复已通过本轮隔离验证，见 [执行证据](docs/validation/operations-e2e-20261110-execution.md)。
-最终能力、180 项跨平台回归、资源回收和使用边界汇总见 [0.3.0 开发交付记录](docs/validation/operations-delivery-0.3.0.md)。
+0.3.0 相对 v0.2.0 新增六类持续运维能力，重点是统一配置和变更流程、备份与恢复准备、节点生命周期管理及离线交付。
 
 | 运维任务 | 本版提供的选项 | 使用边界 |
 | --- | --- | --- |
@@ -150,8 +150,31 @@ bash ./06-maintain-cluster.sh --lang zh_CN --report \
 
 新装默认组件由 `scripts/lib/component-versions.json` 统一定义：Kubernetes v1.36.6、
 Cilium 1.20.4、Helm v3.18.6、cri-tools v1.36.0；更换工具源码不会自动升级已有集群。
-详细步骤见 [06 操作指南](docs/operations-guide.md)、[统一配置](docs/cluster-configuration.md)、
-[离线与企业仓库](docs/offline-delivery.md)及[数据保护](docs/data-protection.md)。
+详细步骤见 [06 操作指南](docs/04-持续运维/04-持续运维操作指南.md)、[统一配置](docs/01-集群部署与配置/02-统一集群配置.md)、
+[离线与企业仓库](docs/06-离线交付/01-锁定物料与离线部署.md)及[数据保护](docs/05-数据保护/01-卷与应用数据保护登记.md)。
+
+## 0.4.0 候选发布：监控与告警
+
+当前正式版本仍为 `VERSION` 中的 0.3.0。0.4.0 已完成候选发布验收，尚未创建正式提交、tag 或 GitHub Release。部署时由 02 明确登记集群用途，03 按用途执行监控中心或应用集群采集端部署。
+
+- `monitoring` 集群运行集中式规则、Alertmanager、Grafana、Loki 和通知组件；`application` 集群根据监控接入需要部署 Agent，使用唯一 `cluster` 身份，避免不同集群的同名对象混淆。
+- 监控中心与应用集群作为不同 Kubernetes 部署目标，可让多套应用集群接入同一中心。监控中心仍依赖其 Kubernetes 集群；生产环境需根据可用性要求单独规划该集群的节点、备份和故障域。
+- 独立观察器运行在被监控集群之外，负责 API VIP、DNS 和监控链路等外部可达性探测。与被监控系统共用物理主机仍存在共同故障域，覆盖报告会保留此边界。
+- 候选回归 572 项通过、1 项环境限制跳过；真实隔离集群验证 LB/VIP 故障恢复、Longhorn 副本恢复与数据校验，以及外部观察器通知。版本发布状态详见 [变更记录](CHANGELOG.md)。
+
+- Prometheus 采集与规则覆盖节点、控制面、etcd、CoreDNS、Deployment、StatefulSet、DaemonSet、Pod 启动/重启/OOM、Job、HPA 指标状态、KEDA scaler/ScaledObject 错误与延迟及 Operator 目标失联、HAProxy 和 Longhorn；隔离环境已验证 Pending 告警、HAProxy 后端、Longhorn 磁盘与通知中继失败告警触发和恢复。KEDA 2.21.0 E2E 验证 scaler 错误及 Operator 目标缺失的触发/恢复；Prometheus/Alertmanager 默认自监控规则加载健康，Alertmanager 目标缺失告警经 ServiceMonitor 移除/恢复验证触发与解除。
+- kubelet/containerd 状态由 02 安装的主机 systemd 采集器写入 textfile，03 配置 node-exporter 只读采集。告警规则使用文件最后写入时间发现采集器停更。已有集群可用 06 的 `monitoring-systemd-collection` 分步安装并续作，也可以用 `monitoring-systemd-remove --node <节点名>` 卸载单节点采集器。隔离三节点已验证真实采集、kubelet 故障告警及恢复，并在 cp1 验证卸载、计划重放及采集恢复。03 首次交互安装已在一节点和三节点 Kind 集群通过，控制面指标接线的验收边界见[监控设计](docs/07-监控与预警/03-监控与告警功能设计.md)。
+- 06 号入口用计划、确认和集群锁管理规则、受管邮件及机器人通知；`monitoring-lb` 将 HAProxy 访问范围、指标采集和 LB 告警整合成可安全续作的单一变更。告警邮件采用简体中文 HTML 模板，显示触发/恢复状态、摘要、处理建议和对象信息。
+- 06 逐风险覆盖审计可核对登记的 Prometheus 抓取目标和原始样本时间，并读取本机独立观察器的健康证据。规则运行和通知送达有各自的验收要求。
+- 03 的监控首装可为 Prometheus、Alertmanager 和 Grafana 分别选择持久卷容量。隔离测试已验证 Pod 重建后保留历史样本、静默和 Grafana 目录，也验证了实际 Longhorn 卷上的 Prometheus 跨节点重建。
+- 06 的 `monitoring-node-network-rules` 可为指定网卡配置带宽和丢包告警，并按节点监控 TCP 重传和监听队列丢弃。可登记实际链路容量，单独发现缺失或过期的采集数据。 [登记方式与阈值](docs/07-监控与预警/03-监控与告警功能设计.md#节点网卡与-tcp-质量)
+- 独立观察服务可作为用户级 systemd 服务运行，持续探测业务 HTTP/HTTPS 或 DNS，并通过企微 Webhook 报告故障和恢复；systemd watchdog 可检测观察进程卡死并自动重启，独立 `OnFailure` 服务会尝试发送中文进程故障通知。通知失败可在用户级 systemd 日志中查看。该保护不覆盖观察主机断电或与集群共用宿主机的故障。
+- 03 安装 Blackbox Exporter 后，06 可登记集群内 Service DNS、ClusterIP 或 Pod IP，由每个节点执行 HTTP 探测并创建中文告警；出口网络策略限制为登记目标和集群 DNS。10.20.1.28–.30 三节点 E2E 验证探测成功、故障告警触发和策略恢复。
+- 日志栈自监控随 03 的 Prometheus 或日志菜单自动同步。Prometheus 采集默认 Loki 和 Alloy 的写入量、重试与丢弃指标，并告警采集失联、Loki 拒收或 Alloy 投递丢弃。
+- 诊断闭环：03 菜单 19 提供一键启动的引导序列，依次执行 Prometheus、Loki/Alloy 和通知配置 QA；既有 release 会检查并复用，等待关键组件 Ready，后续失败时保留已完成阶段供续跑。各子阶段保留自身 QA 和 06 计划确认，不是一个原子变更或自动回滚事务。菜单 5 也可单独安装 Loki/Alloy；默认 Loki 使用持久卷和单副本，生产高可用需外部对象存储及审核过的 values。通知中继代码由脚本打成确定性 zipapp，写入内容哈希命名的不可变 ConfigMap；使用已锁定摘要的 Python 运行镜像，并按安装时选定的镜像源自动改写，可选覆盖为企业仓库中的摘要固定镜像，无需用户预先构建中继镜像。菜单 18/19 可逐条配置邮件、企业微信、钉钉和飞书通知路由，凭据用隐藏输入经标准输入创建 Kubernetes Secret，复用 06 变更计划预览和完整计划 ID 确认；机器人地址限制为各自官方 HTTPS endpoint。只有配置格式合法的公网 Grafana HTTPS Explore 地址才会加入链接；未配置时通知附有界的中文诊断日志。03 向导不替用户创建公网域名、Ingress/Gateway、TLS Secret 或访问控制，须由环境管理员配置并单独验收。
+- 隔离多节点集群已验证 Longhorn 副本故障、告警、重建、恢复和数据一致性；双节点 Cilium E2E 验证 Longhorn 指标端口只允许授权 Prometheus 来源，并实际拦截无关 Pod；独立观察服务在 LB 上验证了 API VIP 入口故障与恢复。
+
+已知边界：业务 SLO、数据库/缓存/消息队列和实际业务入口须逐集群登记；备份新鲜度/恢复验证属于 0.5.0；Gateway/Ingress 专项适配属于后续规划；测试用虚拟机共用 Proxmox 宿主机，尚未验证跨物理故障域失联。生产部署前须按覆盖报告检查这些项目，不得把未配置项当作健康。邮件触发与恢复已由用户确认在 QQ 客户端显示为中文卡片；企微、钉钉、飞书测试群的告警触发与恢复消息均已确认收到，钉钉和飞书通知自动附加 `atlas` 关键词。完整状态和范围见[监控设计](docs/07-监控与预警/03-监控与告警功能设计.md)及[变更记录](CHANGELOG.md)。
 
 ## 部署流程
 
@@ -168,7 +191,7 @@ flowchart TD
     F --> I[管理机运行 05：LB 实时状态 / 业务 VIP / 转发规则]
 ```
 
-逐步配置项、故障恢复和完整流程图见 [部署与运维指南](docs/deployment-guide.md)。
+逐步配置项、故障恢复和完整流程图见 [部署与运维指南](docs/01-集群部署与配置/01-集群部署与运维指南.md)。
 
 ## 运行要求
 
@@ -283,7 +306,7 @@ sudo bash ./02-deploy-cluster.sh --repair --sudo --items all
 
 **选择主机密钥轮换后，Mac/DBX 等外部客户端可能报告指纹变化。** 核对控制台或脚本输出的新指纹后，定向更新客户端的 known_hosts；集群节点无法替你修改管理员电脑上的记录。修复前保留当前会话及控制台入口。
 
-详见 [旧集群修复流程与恢复边界](docs/deployment-guide.md#02-旧集群基线修复) 和 [修复设计与验证边界](docs/validation/repair-design.md)。
+详见 [旧集群修复流程与安全边界](docs/01-集群部署与配置/01-集群部署与运维指南.md#02旧集群基线修复) 和 [修复功能设计](docs/01-集群部署与配置/03-旧集群基线修复功能设计.md)。
 
 ### 3. 按需安装插件
 
@@ -304,9 +327,9 @@ sudo bash ./03-install-addons.sh --lang zh_CN
 
 Headlamp 排在插件菜单首位，建议先安装。它默认只通过 ClusterIP 提供服务，并绑定 Kubernetes `view` 只读角色；访问前请配置身份认证方式或使用 `kubectl port-forward`。安装器会在启动时及每个插件成功安装/升级后，检查 Headlamp 是否存在，并按已部署插件实际注册的 CRD 资源自动同步 `get/list/watch` 只读授权，不授予写权限或读取 Secret。Longhorn 安装前会通过阶段二的 SSH mesh 在全部 Kubernetes 节点自动安装并启用 `open-iscsi`/`iscsid`、加载并持久化 `iscsi_tcp`，并补齐主机工具和 NFSv4 客户端；脚本会避开 Longhorn 标记不兼容的 open-iscsi 2.1.12。Longhorn Base Image 的挂载传播、磁盘容量和文件系统适用性仍需按实际节点确认。如果已有默认 StorageClass，03 不会自动替换。安装 Envoy Gateway 时，控制器就绪后可选创建基础 HTTP Gateway/HTTPRoute 指向现有 Service；TLS、DNS、认证与可达的外部负载均衡仍需按环境配置。
 
-**全部插件统一按实际 Kubernetes 版本筛选版本**：读取服务端 `/version`，按 Chart 的 `kubeVersion` 和已适配的官方兼容表推荐稳定候选，Envoy 也不再固定默认版本。手动选择后重新检查实际下载包，并按当前集群版本/API 预渲染。明确不匹配时停止；缺少兼容依据时标记 `UNKNOWN` 并默认拒绝继续。`CHART` 只表示符合 Chart 声明，不代表完整上游测试；额外 values 的自定义镜像仍须单独核对。详细范围见[版本与 Kubernetes 匹配](docs/addon-download-sources.md#全部插件的版本与-kubernetes-匹配)。
+**全部插件统一按实际 Kubernetes 版本筛选版本**：读取服务端 `/version`，按 Chart 的 `kubeVersion` 和已适配的官方兼容表推荐稳定候选，Envoy 也不再固定默认版本。手动选择后重新检查实际下载包，并按当前集群版本/API 预渲染。明确不匹配时停止；缺少兼容依据时标记 `UNKNOWN` 并默认拒绝继续。`CHART` 只表示符合 Chart 声明，不代表完整上游测试；额外 values 的自定义镜像仍须单独核对。详细范围见[版本与 Kubernetes 匹配](docs/02-插件管理/01-插件下载源与兼容性.md#全部插件的版本与-kubernetes-匹配)。
 
-来源地址、覆盖范围、自定义代理的路径约定及排错见 [插件下载源](docs/addon-download-sources.md)。
+来源地址、覆盖范围、自定义代理的路径约定及排错见 [插件下载源](docs/02-插件管理/01-插件下载源与兼容性.md)。
 
 ### 4. 按角色检查
 
@@ -332,7 +355,7 @@ bash ./05-manage-lb.sh
 
 首次进入“自有 LB 节点清单”，设置 SSH 用户并登记实际节点，例如 `lb1=10.20.1.12 lb2=10.20.1.19`。目标节点必须已安装并配置 LB、支持免密 SSH 和 `sudo -n`。选择“实时状态”核对服务与配置，再登记业务 VIP、创建转发规则。
 
-本机清单位于 `~/.config/atlas-kubekit/lb-manager.json`；远端受管业务状态位于 `/etc/atlas-kubekit/lb-manager.json`。两者用途不同。API VIP 不通过业务 VIP 菜单删除。完整操作及回退边界见 [LB 运维说明](docs/lb-manager.md)。
+本机清单位于 `~/.config/atlas-kubekit/lb-manager.json`；远端受管业务状态位于 `/etc/atlas-kubekit/lb-manager.json`。两者用途不同。API VIP 不通过业务 VIP 菜单删除。完整操作及回退边界见 [LB 运维说明](docs/03-负载均衡与业务入口/01-LB运维管理指南.md)。
 
 ## 升级现有环境
 
@@ -341,89 +364,48 @@ bash ./05-manage-lb.sh
 3. 旧集群先执行 `02 --check`，需要修复时先看 `--repair --dry-run` 计划，再选择具体项目。版本升级本身不执行 kubeadm、不升级 Kubernetes 或插件，也不迁移数据。
 4. LB 安装脚本重跑保留受管业务路由/VIP；状态或标记损坏时会停止，应先核对备份。生产环境仍需安排可接受短暂切换的维护窗口。
 5. 插件按名称选择：Headlamp 插入首位后编号改变。已有 Helm release 默认跳过，明确选择升级才应用新版本/下载源。
-6. 使用 06 管理已有集群时，配置填写当前实际版本和节点，不直接采用新装模板默认值。先巡检、核对备份，再预览并确认专属变更计划；不为升级重跑 01/02。具体见 [持续运维指南](docs/operations-guide.md)。
+6. 使用 06 管理已有集群时，配置填写当前实际版本和节点，不直接采用新装模板默认值。先巡检、核对备份，再预览并确认专属变更计划；不为升级重跑 01/02。具体见 [持续运维指南](docs/04-持续运维/04-持续运维操作指南.md)。
 
 与 `0.1.0` 相比，正常交互需要外置语言目录和共享运行库，旧的单文件传输方式必须调整。`0.x` 阶段的行为变化以 [CHANGELOG](CHANGELOG.md) 为准，不视为稳定版兼容承诺。
 
-## 版本管理
+## 查看工具版本
 
-`VERSION` 是源码版本的唯一来源，当前正式版本为 `0.3.0`，对应 tag 为 `v0.3.0`。各部署入口和内部阶段 Bash 脚本内嵌自动同步的版本，版本查询无需读取外部 VERSION；正常交互仍需完整运行依赖。
+工具版本与 Kubernetes、Cilium 等组件版本相互独立。使用入口脚本查看当前脚本版本：
 
 ```bash
-# 查询实际脚本版本，无需 sudo
 bash ./01-prepare-node.sh --version
-bash ./04-verify-cluster.sh -V
-
-# 维护者：同步 VERSION，并检查所有脚本是否一致
-python3 scripts/update-version.py
-python3 scripts/update-version.py --check
 ```
 
-01～06 和全部内部阶段脚本均支持 `--version`/`-V`。版本不是部署成功标记，也与 Kubernetes/Cilium 版本分开；源码更新后仍需确认服务器实际副本。
+版本号不是部署成功标记；源码更新后，应确认目标机器实际运行的脚本副本。
 
-递增规则、版本同步和 `vX.Y.Z` tag 发布流程见 [版本管理指南](docs/versioning.md)。版本变更和 tag 不由部署脚本自动完成。
+## 入口脚本
 
-## 项目结构
+| 脚本 | 用途 |
+| --- | --- |
+| `01-prepare-node.sh` | 准备单台 Ubuntu 节点并建立安全基线 |
+| `02-deploy-cluster.sh` | 登记节点并部署 Kubernetes 集群 |
+| `03-install-addons.sh` | 选择并管理可选插件 |
+| `04-verify-cluster.sh` | 按节点角色检查集群状态 |
+| `05-manage-lb.sh` | 管理 HAProxy、Keepalived、业务 VIP 和转发规则 |
+| `06-maintain-cluster.sh` | 管理配置、备份、节点生命周期和受控升级 |
 
-```text
-atlas-kubekit/
-├── 01-prepare-node.sh          # 每台节点独立运行
-├── 02-deploy-cluster.sh        # 单节点集中编排
-├── 03-install-addons.sh        # 可选插件菜单
-├── 04-verify-cluster.sh        # 按角色巡检菜单
-├── 05-manage-lb.sh             # 自有 HAProxy / Keepalived 运维菜单
-├── 06-maintain-cluster.sh      # 持续运维、计划执行、隔离恢复与锁定交付
-├── VERSION                    # 源码版本的唯一维护来源
-├── locales/                   # en / zh_CN / zh_TW messageKey 语言目录
-├── scripts/
-│   ├── deploy/                # 02 配置、配对、阶段、物料和验收模块
-│   ├── lb/                    # LB 协调器、远端事务和原子文件发布
-│   ├── operations/            # 按能力划分配置、执行、生命周期、物料和数据保护
-│   ├── lib/                   # 国际化、组件版本、主机互斥与受限归档
-│   ├── validate.py            # 无环境副作用的源码与可移植回归检查
-│   ├── addons/                 # 插件下载源与兼容性规则源码
-│   ├── sync-storage.py         # 同步 01 的存储辅助载荷
-│   ├── sync-addon-sources.py   # 同步 03 的下载辅助载荷
-│   ├── update-version.py      # 同步脚本内嵌版本 / 检查一致性
-│   └── stages/                # 02 调用与分发的阶段脚本；含 check-cluster.py 合规检查器
-├── docs/
-│   ├── deployment-guide.md    # 完整流程、参数、恢复与验收
-│   ├── versioning.md          # 版本来源、查询、递增与发布
-│   ├── releasing.md           # GitHub 发布准备清单
-│   ├── internationalization.md # 语言目录扩展与迁移清单
-│   ├── lb-manager.md          # 05 运维操作与边界
-│   └── validation/            # 历史实验室验证摘要与限制
-├── tests/                     # 规则/协议/故障回归；e2e/ 为显式隔离环境驱动
-├── .github/
-│   ├── ISSUE_TEMPLATE/        # 缺陷与功能请求模板
-│   ├── workflows/validate.yml # Ubuntu/macOS、Python 3.9/3.12 检查
-│   └── pull_request_template.md
-├── LICENSE
-├── CONTRIBUTING.md
-├── SECURITY.md
-├── CODE_OF_CONDUCT.md
-└── CHANGELOG.md
-```
+脚本通过 SSH 和 Kubernetes API 对接节点及集群。请复制完整项目目录，以包含运行所需的语言目录和辅助文件；详细步骤见[部署指南](docs/01-集群部署与配置/01-集群部署与运维指南.md)。
 
-项目名称与仓库目录使用 **Atlas KubeKit / `atlas-kubekit`**。为兼容已部署节点，服务器状态目录、配置文件和 systemd 服务名继续使用已有 `k8s-deploy` 标识。
+## 用户文档
 
-仓库中的内部脚本位于 `scripts/stages/`；服务器运行副本仍安装在 `/usr/local/lib/k8s-deploy/`，systemd 续跑使用该目录。02 同时兼容旧的平铺脚本包，优先读取新目录。内部脚本通常由 02 调用，具体环境参数见完整指南。
+从 [产品概览与架构](docs/00-产品概览与架构.md) 了解组件与整体设计，再按需要阅读 [文档导航](docs/00-文档导航.md) 中的部署和运维指南。
 
-## 文档与验证记录
-
-- [变更记录](CHANGELOG.md)：`0.2.0` 相对于 `v0.1.0` 的新增能力、修复、升级影响和已知限制。
-- [部署与运维指南](docs/deployment-guide.md)：完整流程图、逐步解释、命令、恢复与验收。
-- [插件历史验证](docs/validation/addons-e2e.md)：14 项插件的核心功能验证摘要及配置边界。
-- [04 历史验证](docs/validation/verify-results.md)：角色菜单、组件检查、网络/PVC/HTTP/TLS 验证摘要。
-- [LB 运维管理器说明](docs/lb-manager.md)：05 号脚本试用范围、配置边界和现有集群测试步骤。
-- [国际化说明](docs/internationalization.md)：messageKey、回退规则、新语言扩展及未迁移清单。
-- [LB 安装回归](docs/validation/lb-installer-regression.md)：配置事务、重跑与故障恢复的自动化检查范围。
-- [真实双 LB 验证](docs/validation/lb-live-e2e-20261022.md)：首次安装、路由、服务故障与重启观察记录。
-- [0.2.0 发布验收](docs/validation/release-0.2.0.md)：本地 Kubernetes 集群完整验证的维护者确认与发布范围。
-- [版本管理指南](docs/versioning.md)：VERSION、脚本内嵌版本、SemVer 和 Git tag。
-- [GitHub 发布清单](docs/releasing.md)：首次发布、版本变更、仓库设置与记录要求。
-
-维护者于 **2026-10-22 确认 0.2.0 已在本地 Kubernetes 集群完成完整验证并批准发布**，见 [发布验收记录](docs/validation/release-0.2.0.md)。此前的双 LB 记录还保留了真实安装、路由、重跑、故障切换、重启及 15 项自动化回归的详细证据。历史报告保留各自日期、版本和观察范围；本地验证不扩展为所有云厂商、拓扑、容量或灾备场景的验证承诺。
+- [部署指南](docs/01-集群部署与配置/01-集群部署与运维指南.md)：从节点准备到插件安装和日常检查。
+- [统一集群配置](docs/01-集群部署与配置/02-统一集群配置.md)：配置模板、导入导出和环境差异检查。
+- [插件说明](docs/02-插件管理/01-插件下载源与兼容性.md)：可选组件用途、下载源和兼容性。
+- [LB 运维管理](docs/03-负载均衡与业务入口/01-LB运维管理指南.md)：VIP、HAProxy 转发和状态查看。
+- [持续运维指南](docs/04-持续运维/04-持续运维操作指南.md)：计划式变更、备份、恢复准备和诊断。
+- [数据保护范围](docs/05-数据保护/01-卷与应用数据保护登记.md)：控制面、卷和应用数据的保护边界。
+- [离线交付](docs/06-离线交付/01-锁定物料与离线部署.md)：锁定依赖和受限网络部署。
+- [监控与预警规划](docs/07-监控与预警/01-生产监控与预警功能定义.md)：目标、验收边界和风险覆盖范围。
+- [监控与告警设计](docs/07-监控与预警/03-监控与告警功能设计.md)：当前开发范围、部署方式、已验证能力和已知限制。
+- [产品版本路线图](docs/09-产品路线图/01-版本里程碑与能力规划.md)：0.4.0 监控告警及后续迈向 1.0.0 的阶段目标。
+- [版本变更](CHANGELOG.md)：面向使用者的新增能力、兼容性变化和已知限制。
 
 ## 贡献与问题反馈
 

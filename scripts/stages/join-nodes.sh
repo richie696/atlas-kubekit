@@ -129,6 +129,12 @@ inf "Running kubeadm join (token and certificate key are hidden)"
   and any existing kubelet state. Do not reset the node without diagnosing the failure."
 pass "Join complete"
 
+if [ "$ROLE" = cp ]; then
+  METRICS_SETUP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/configure-control-plane-metrics.sh"
+  [ -r "$METRICS_SETUP" ] || die 'Missing configure-control-plane-metrics.sh; control-plane telemetry is not configured'
+  bash "$METRICS_SETUP" "$SELF_IP" || die 'Control-plane telemetry endpoint setup failed; inspect the manifest backups before proceeding'
+fi
+
 # ============================================================== 4. 汇总
 hdr "4. Summary"
 inf "Waiting for node readiness; initial image pulls may take several minutes"

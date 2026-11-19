@@ -100,6 +100,32 @@ def perform(args, tr, run_context):
                 (tr("ops.state." + details["state"].replace("-", "_")),),
             )
         )
+        if plan.capability in plans.MONITORING_RULE_CAPABILITIES:
+            rows.append(Finding("monitoring-rule-evaluation", "UNVERIFIED", "ops.monitoring.rule_unverified"))
+        elif plan.capability == "monitoring-longhorn-collection":
+            rows.append(Finding("monitoring-collection", "UNVERIFIED", "ops.monitoring.collection_unverified"))
+        elif plan.capability == "monitoring-lb-collection":
+            rows.append(Finding("monitoring-collection", "UNVERIFIED", "ops.monitoring.lb_collection_unverified"))
+        elif plan.capability == "monitoring-lb":
+            rows.append(Finding("monitoring-collection", "UNVERIFIED", "ops.monitoring.lb_facade_unverified"))
+        elif plan.capability == "monitoring-systemd-collection":
+            rows.append(Finding("monitoring-systemd-collection", "UNVERIFIED", "ops.monitoring.systemd_unverified"))
+        elif plan.capability in ("monitoring-email", "monitoring-email-diagnostics"):
+            rows.append(Finding("monitoring-email-delivery", "UNVERIFIED", "ops.monitoring.email_unverified"))
+        elif plan.capability == "monitoring-robot":
+            rows.append(Finding("monitoring-robot-delivery", "UNVERIFIED", "ops.monitoring.robot_unverified"))
+        elif plan.capability == "monitoring-relay-metrics":
+            rows.append(Finding("monitoring-relay-metrics", "UNVERIFIED", "ops.monitoring.relay_metrics_unverified"))
+        elif plan.capability == "monitoring-cilium-collection":
+            rows.append(Finding("monitoring-collection", "UNVERIFIED", "ops.monitoring.cilium_unverified"))
+        elif plan.capability == "monitoring-network-probes":
+            rows.append(Finding("monitoring-network-probes", "UNVERIFIED", "ops.monitoring.network_probe_unverified"))
+        elif plan.capability == "monitoring-inhibition":
+            rows.append(Finding("monitoring-inhibition", "UNVERIFIED", "ops.monitoring.inhibition_warning"))
+        elif plan.capability == "monitoring-silence":
+            rows.append(Finding("monitoring-silence", "PASS", "ops.monitoring.silence_applied",
+                                (details.get("result", {}).get("state", "unknown"),
+                                 details.get("result", {}).get("silenceId", ""))))
     elif args.action == "change-status":
         if not args.plan_id:
             raise OperationError("ops.change.invalid_parameters")
@@ -119,6 +145,32 @@ def perform(args, tr, run_context):
                 (tr("ops.state." + details["state"].replace("-", "_")),),
             )
         )
+        if details.get("capability") in plans.MONITORING_RULE_CAPABILITIES and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-rule-evaluation", "UNVERIFIED", "ops.monitoring.rule_unverified"))
+        elif details.get("capability") == "monitoring-longhorn-collection" and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-collection", "UNVERIFIED", "ops.monitoring.collection_unverified"))
+        elif details.get("capability") == "monitoring-lb-collection" and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-collection", "UNVERIFIED", "ops.monitoring.lb_collection_unverified"))
+        elif details.get("capability") == "monitoring-lb" and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-collection", "UNVERIFIED", "ops.monitoring.lb_facade_unverified"))
+        elif details.get("capability") == "monitoring-systemd-collection" and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-systemd-collection", "UNVERIFIED", "ops.monitoring.systemd_unverified"))
+        elif details.get("capability") in ("monitoring-email", "monitoring-email-diagnostics") and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-email-delivery", "UNVERIFIED", "ops.monitoring.email_unverified"))
+        elif details.get("capability") == "monitoring-robot" and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-robot-delivery", "UNVERIFIED", "ops.monitoring.robot_unverified"))
+        elif details.get("capability") == "monitoring-relay-metrics" and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-relay-metrics", "UNVERIFIED", "ops.monitoring.relay_metrics_unverified"))
+        elif details.get("capability") == "monitoring-cilium-collection" and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-collection", "UNVERIFIED", "ops.monitoring.cilium_unverified"))
+        elif details.get("capability") == "monitoring-network-probes" and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-network-probes", "UNVERIFIED", "ops.monitoring.network_probe_unverified"))
+        elif details.get("capability") == "monitoring-inhibition" and details["state"] == "succeeded":
+            rows.append(Finding("monitoring-inhibition", "UNVERIFIED", "ops.monitoring.inhibition_warning"))
+        elif details.get("capability") == "monitoring-silence" and details["state"] == "succeeded":
+            result = details.get("result", {})
+            rows.append(Finding("monitoring-silence", "PASS", "ops.monitoring.silence_applied",
+                                (result.get("state", "unknown"), result.get("silenceId", ""))))
     elif args.action == "lock-status":
         value = coordinator.status()
         details = dict(state="unlocked", owner=None, resourceVersion=None)

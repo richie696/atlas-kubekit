@@ -152,6 +152,10 @@ kubeadm init --config "$KUBECONFIG_INIT" --upload-certs > "$INIT_LOG" 2>&1 || di
 
 pass "kubeadm init complete"
 
+METRICS_SETUP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/configure-control-plane-metrics.sh"
+[ -r "$METRICS_SETUP" ] || die 'Missing configure-control-plane-metrics.sh; no further cluster changes were made'
+bash "$METRICS_SETUP" "$SELF_IP" || die 'Control-plane telemetry endpoint setup failed; inspect the manifest backups before proceeding'
+
 # ============================================================== 4. kubeconfig
 hdr "3. Configure kubeconfig"
 export KUBECONFIG=/etc/kubernetes/admin.conf

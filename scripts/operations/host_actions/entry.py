@@ -19,6 +19,8 @@ from . import (
     registry,
     component,
     component_images,
+    systemd_metrics,
+    lb_vip_metrics,
 )
 
 
@@ -57,6 +59,12 @@ ACTIONS = {
     "component-apply": (component.apply, True),
     "component-complete": (component.complete, True),
     "component-images": (component_images.prepare, True),
+    "systemd-metrics-observe": (systemd_metrics.observe, False),
+    "systemd-metrics-apply": (systemd_metrics.apply, True),
+    "systemd-metrics-observe-removal": (systemd_metrics.observe_removal, False),
+    "systemd-metrics-remove": (systemd_metrics.remove, True),
+    "lb-vip-metrics-observe": (lb_vip_metrics.observe, False),
+    "lb-vip-metrics-apply": (lb_vip_metrics.apply, True),
     "join-issue": (lambda p, r: join_credentials.issue(p), True),
     "join-revoke": (lambda p, r: join_credentials.revoke(p), True),
 }

@@ -98,8 +98,13 @@ class CoordinationTests(unittest.TestCase):
     def test_confirmation_stale_observations_and_wrong_cluster_have_no_effect(self):
         plan=plans.make('node-maintenance','cluster-12345678',{'ready':True},{'node':'w1','action':'cordon'})
         effects=[]
-        for confirm,observed in [('yes',{'ready':True}),(plan.id,{'ready':False})]:
-            with self.assertRaises(OperationError):execution.execute(plan.record(),confirm,self.coordinator,lambda p:observed,lambda p,c:effects.append(p),lambda p:p)
+        for confirm, observed, error in [
+            ('yes', {'ready': True}, 'ops.change.confirm_mismatch'),
+            (plan.id, {'ready': False}, 'ops.change.stale'),
+        ]:
+            with self.assertRaises(OperationError) as caught:
+                execution.execute(plan.record(),confirm,self.coordinator,lambda p:observed,lambda p,c:effects.append(p),lambda p:p)
+            self.assertEqual(caught.exception.key, error)
         wrong=plans.make('node-maintenance','another-cluster',{}, {})
         with self.assertRaises(OperationError):execution.execute(wrong.record(),wrong.id,self.coordinator,lambda p:{},lambda p,c:effects.append(p),lambda p:p)
         self.assertEqual(effects,[])

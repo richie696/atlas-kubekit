@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: MIT
+"""Controlled publication of Longhorn volume robustness rules."""
+import copy
+from scripts.lib.i18n import translate
+from ..adapters.kubernetes import resource_name
+from ..configuration import normalize, revision
+from ..models import OperationError, fingerprint
+from ..monitoring import localization, longhorn_rules, publication
+from .monitoring_rules import _expected
+
+
+def _manifest(values):
+    try:
+        return longhorn_rules.volume_robustness_rules(values["namespace"], values["release"], values["claims"],
+            values["holdSeconds"], values["maxAgeSeconds"], values["severity"], values["summary"], values["description"])
+    except (ValueError, TypeError, KeyError):
+        raise OperationError("ops.change.invalid_parameters") from None
+
+
+def parameters(value):
+    required = {"configuration", "namespace", "release", "prometheusName", "claims", "holdSeconds",
+                "maxAgeSeconds", "severity", "summary", "description", "expected"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise OperationError("ops.change.invalid_parameters")
+    result = copy.deepcopy(value)
+    result["configuration"] = normalize(value["configuration"])
+    if not isinstance(value["prometheusName"], str):
+        raise OperationError("ops.change.invalid_parameters")
+    resource_name(value["prometheusName"])
+    result["expected"] = _expected(value["expected"])
+    _manifest(result)
+    return result
+
+
+def from_arguments(args, config, environment):
+    config, _ = environment.verify(config)
+    claims = []
+    for item in args.monitoring_pvc or []:
+        if not isinstance(item, str) or item.count("/") != 1:
+            raise OperationError("ops.change.invalid_parameters")
+        namespace, claim = item.split("/")
+        claims.append({"namespace": namespace, "claim": claim})
+    values = {"configuration": config, "namespace": args.monitoring_namespace, "release": args.monitoring_release,
+              "prometheusName": args.monitoring_prometheus_name, "claims": claims,
+              "holdSeconds": args.monitoring_hold_seconds, "maxAgeSeconds": args.monitoring_max_age,
+              "severity": args.monitoring_severity,
+              "summary": translate(localization.notification_language(args), "ops.monitoring.longhorn_summary"),
+              "description": translate(localization.notification_language(args), "ops.monitoring.longhorn_description")}
+    values["expected"] = publication.capture(environment.client, _manifest(values), values["prometheusName"])
+    return parameters(values)
+
+
+def preview(value):
+    values = parameters(value)
+    return (("ops.monitoring.longhorn_preview", (len(values["claims"]), values["namespace"],
+                values["prometheusName"], values["holdSeconds"], values["maxAgeSeconds"])),
+            ("ops.monitoring.pvcs_preview", (", ".join(p["namespace"] + "/" + p["claim"] for p in values["claims"]),)),
+            ("ops.monitoring.longhorn_warning", ()), ("ops.monitoring.rule_warning", ()))
+
+
+def observe(value, environment):
+    values = parameters(value)
+    config, _ = environment.verify(values["configuration"])
+    manifest = _manifest(values)
+    observed = publication.capture(environment.client, manifest, values["prometheusName"])
+    if observed != values["expected"]:
+        raise OperationError("ops.change.stale")
+    return {"configurationRevision": revision(config), "target": observed, "desiredSpecHash": fingerprint(manifest["spec"])}
+
+
+def apply(value, environment, checkpoint, run_id):
+    values = parameters(value)
+    environment.verify(values["configuration"])
+    checkpoint("monitoring-longhorn-rules")
+    return publication.publish(environment.client, _manifest(values), values["prometheusName"], values["expected"])

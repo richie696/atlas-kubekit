@@ -24,6 +24,118 @@ atlas_i18n_init "$ATLAS_LANG" || exit 2
 UI_LANG=en
 ui_text() { atlas_t "$1"; }
 ui_printf() { atlas_printf "$@"; }
+
+longhorn_monitoring_hint() {
+  local prometheus_resources
+  kubectl -n longhorn-system get service longhorn-backend >/dev/null 2>&1 || return 0
+  prometheus_resources="$(kubectl -n monitoring get prometheuses.monitoring.coreos.com -o name 2>/dev/null)" || return 0
+  [ -n "$prometheus_resources" ] || return 0
+  ui_printf 'phase03.monitoring.longhorn_collection_hint'
+}
+cilium_monitoring_hint() {
+  local prometheus_resources
+  kubectl -n kube-system get daemonset cilium >/dev/null 2>&1 || return 0
+  prometheus_resources="$(kubectl -n monitoring get prometheuses.monitoring.coreos.com -o name 2>/dev/null)" || return 0
+  [ -n "$prometheus_resources" ] || return 0
+  ui_printf 'phase03.monitoring.cilium_collection_hint'
+}
+ensure_monitoring_secret_key() {
+  local name="$1" key="$2"
+  kubectl -n monitoring get secret "$name" -o json 2>/dev/null | python3 -c '
+import json,sys
+try:
+    item=json.load(sys.stdin)
+    key=sys.argv[1]
+    raise SystemExit(0 if key in item.get("data", {}) and item["data"][key] else 1)
+except (ValueError, TypeError, KeyError):
+    raise SystemExit(1)
+' "$key"
+}
+read_monitoring_topology_marker() {
+  local marker_json namespace
+  namespace="$(kubectl get namespace monitoring --ignore-not-found=true -o name)" \
+    || return 1
+  [ -n "$namespace" ] || return 0
+  marker_json="$(kubectl -n monitoring get configmap atlas-monitoring-topology \
+    --ignore-not-found=true -o json)" || return 1
+  [ -n "$marker_json" ] || return 0
+  printf '%s' "$marker_json" | python3 -c '
+import json,sys
+try:
+    item=json.load(sys.stdin)
+    labels=item.get("metadata", {}).get("labels", {})
+    data=item.get("data", {})
+    print("\t".join((labels.get("atlas-kubekit.io/managed-by", ""),
+                      data.get("mode", ""), data.get("cluster-id", ""))))
+except (ValueError, TypeError):
+    raise SystemExit(2)
+'
+}
+validate_monitoring_topology_marker() {
+  local mode="$1" cluster_id="${2:-}" marker owner existing_mode existing_cluster
+  marker="$(read_monitoring_topology_marker)" \
+    || die 'phase03.monitoring.topology_marker_read_failed'
+  [ -n "$marker" ] || return 0
+  IFS=$'\t' read -r owner existing_mode existing_cluster <<< "$marker"
+  [ "$owner" = monitoring ] && [ "$existing_mode" = "$mode" ] \
+    && { [ "$mode" = center ] || [ "$existing_cluster" = "$cluster_id" ]; } \
+    || die 'phase03.monitoring.topology_marker_conflict'
+}
+ensure_monitoring_topology_marker() {
+  local mode="$1" cluster_id="${2:-}" marker
+  validate_monitoring_topology_marker "$mode" "$cluster_id"
+  marker="$(read_monitoring_topology_marker)" \
+    || die 'phase03.monitoring.topology_marker_read_failed'
+  [ -z "$marker" ] || return 0
+  kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f - >/dev/null \
+    || die 'phase03.monitoring.topology_marker_write_failed'
+  kubectl -n monitoring apply -f - >/dev/null <<EOF || die 'phase03.monitoring.topology_marker_write_failed'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atlas-monitoring-topology
+  namespace: monitoring
+  labels:
+    atlas-kubekit.io/managed-by: monitoring
+data:
+  mode: "$mode"
+  cluster-id: "$cluster_id"
+EOF
+}
+monitoring_topology_mode() {
+  local marker owner mode cluster_id
+  marker="$(read_monitoring_topology_marker)" \
+    || die 'phase03.monitoring.topology_marker_read_failed'
+  [ -n "$marker" ] || return 0
+  IFS=$'\t' read -r owner mode cluster_id <<< "$marker"
+  [ "$owner" = monitoring ] && [[ "$mode" = center || "$mode" = agent ]] \
+    || die 'phase03.monitoring.topology_marker_conflict'
+  printf '%s' "$mode"
+}
+read_cluster_purpose() {
+  local resource
+  resource="$(kubectl -n kube-system get configmap atlas-kubekit-configuration \
+    --ignore-not-found=true -o json)" || return 1
+  [ -n "$resource" ] || { printf 'application'; return 0; }
+  printf '%s' "$resource" | python3 -c '
+import json,sys
+try:
+    item=json.load(sys.stdin)
+    labels=item.get("metadata", {}).get("labels", {})
+    if labels.get("atlas-kubekit.io/managed-by") != "operations":
+        raise ValueError()
+    record=json.loads(item["data"]["configuration"])
+    purpose=record["config"]["cluster"].get("purpose", "application")
+    if purpose not in ("application", "monitoring"):
+        raise ValueError()
+    print(purpose)
+except (ValueError, TypeError, KeyError):
+    raise SystemExit(2)
+'
+}
+longhorn_replica_guidance() {
+  ui_printf 'phase03.ui.longhorn_replica_guidance'
+}
 ask() {
   local prompt="$1" default="$2" answer
   case "$prompt" in
@@ -187,6 +299,23 @@ def yaml_module():
     return yaml
 
 
+def manifest_loader(yaml):
+    """Load Helm manifests while treating the YAML 1.1 `=` value as text.
+
+    Some Prometheus CRD schemas contain an enum value consisting only of `=`.
+    PyYAML resolves that scalar to the legacy `tag:yaml.org,2002:value` tag but
+    SafeLoader has no constructor for it. Helm accepts the document; preserve
+    the scalar as a string so image rewriting can safely round-trip the chart.
+    """
+    class HelmManifestLoader(yaml.SafeLoader):
+        pass
+
+    HelmManifestLoader.add_constructor(
+        "tag:yaml.org,2002:value", yaml.constructor.SafeConstructor.construct_yaml_str
+    )
+    return HelmManifestLoader
+
+
 def https_url(value):
     url = urllib.parse.urlsplit(value)
     if (url.scheme != "https" or not url.hostname or url.username or url.password
@@ -257,6 +386,10 @@ def registry_ref(ref, config):
     if registry == "docker.io" and "/" not in path:
         path = "library/" + path
     if registry not in PUBLIC_REGISTRIES:
+        return ref
+    # DaoCloud currently rejects some GHCR packages (HTTP 403). Keep those
+    # references on GHCR so a selected file/chart mirror does not break installs.
+    if registry == "ghcr.io" and config["profile"] in {"daocloud", "1panel"}:
         return ref
     if config["profile"] == "google":
         return "mirror.gcr.io/" + path if registry == "docker.io" else ref
@@ -896,10 +1029,11 @@ def origin_key(origin):
 
 def render(config, language):
     yaml = yaml_module()
+    loader = manifest_loader(yaml)
     # Helm charts may emit empty YAML documents between `---` separators.
     # PyYAML parses those as None; serializing them again writes `null` as a
     # document, which Helm's install/upgrade manifest decoder rejects.
-    docs = [doc for doc in yaml.safe_load_all(sys.stdin) if doc is not None]
+    docs = [doc for doc in yaml.load_all(sys.stdin, Loader=loader) if doc is not None]
     changes = set()
     for doc in docs:
         if not isinstance(doc, dict):
@@ -915,7 +1049,7 @@ def render(config, language):
             # Envoy's controller creates data-plane Pods later using this config.
             for key, content in doc.get("data", {}).items():
                 if key == "envoy-gateway.yaml" and isinstance(content, str):
-                    nested = yaml.safe_load(content)
+                    nested = yaml.load(content, Loader=loader)
                     rewrite_spec(nested, config, changes)
                     doc["data"][key] = yaml.safe_dump(nested, sort_keys=False)
     label = tr("phase03.source.label.image_source")
@@ -1090,7 +1224,7 @@ SH
   RENDER_ARGS=(--post-renderer "$TMP_DIR/post-renderer")
 }
 install_downloaded_chart() {
-  local release="$1" chart="$2" namespace="$3" policy="$4" directory values_path i proxy_image compatibility_state
+  local release="$1" chart="$2" namespace="$3" policy="$4" directory values_path i proxy_image compatibility_state failed_initial retain_values=0
   shift 4
   local -a args=("$@") layers=()
   directory="$(mktemp -d "$TMP_DIR/values.XXXXXX")"
@@ -1103,6 +1237,26 @@ install_downloaded_chart() {
   fi
   if [ "$EXISTING" -eq 1 ]; then
     helm list --all -n "$namespace" --filter "^${release}$" -o json > "$directory/current-release.json"
+    helm history "$release" -n "$namespace" -o json > "$directory/release-history.json" \
+      || die 'phase03.ui.could_not_determine_the_installed_78559a24'
+    failed_initial="$(python3 "$SCRIPT_DIR/scripts/addons/helm_release.py" \
+      initial-failure-needs-cleanup < "$directory/release-history.json")" \
+      || die 'phase03.ui.could_not_determine_the_installed_78559a24'
+    if [ "$failed_initial" = yes ]; then
+      ui_printf 'phase03.ui.failed_first_install_cleanup_warning' "$release" "$namespace" >&2
+      yes_no 'phase03.ui.confirm_failed_first_install_cleanup' no \
+        || die 'phase03.ui.failed_first_install_cleanup_cancelled'
+      helm get values "$release" -n "$namespace" -o yaml > "$directory/existing.yaml" \
+        || die 'phase03.ui.could_not_determine_the_installed_78559a24'
+      helm uninstall "$release" -n "$namespace" --no-hooks --wait --timeout 120s \
+        || die 'phase03.ui.failed_first_install_cleanup_failed'
+      # Reinstall as a fresh release, retaining the failed install's explicit
+      # values. CRDs are intentionally left in place by Helm uninstall.
+      EXISTING=0
+      retain_values=1
+    fi
+  fi
+  if [ "$EXISTING" -eq 1 ]; then
     local chart_name direction
     chart_name="$(python3 -c 'import yaml,sys; print(yaml.safe_load(open(sys.argv[1]))["name"])' "$directory/chart.yaml")"
     direction="$(source_tool upgrade-direction "$directory/current-release.json" "$chart_name" \
@@ -1117,10 +1271,13 @@ install_downloaded_chart() {
   layers+=("$directory/defaults.yaml")
   if [ "$EXISTING" -eq 1 ]; then
     helm get values "$release" -n "$namespace" -o yaml > "$directory/existing.yaml"
-    # Use new Chart defaults while retaining explicit existing and user values.
-    args=(-f "$directory/existing.yaml" "${args[@]}")
-  else
+    retain_values=1
+  elif [ ! -f "$directory/existing.yaml" ]; then
     printf '{}\n' > "$directory/existing.yaml"
+  fi
+  # Use new Chart defaults while retaining explicit existing and user values.
+  if [ "$retain_values" -eq 1 ]; then
+    args=(-f "$directory/existing.yaml" "${args[@]}")
   fi
   layers+=("$directory/existing.yaml")
   if [ "$EXISTING" -eq 1 ] || [ "${#args[@]}" -gt 0 ]; then
@@ -1132,7 +1289,7 @@ install_downloaded_chart() {
     fi
   done
   if [ "$release" = envoy-gateway ]; then
-    say 'phase03.ui.resolving_envoy_proxy_image_from_t_b773154e'
+    ui_printf 'phase03.ui.resolving_envoy_proxy_image_from_t_b773154e'
     source_tool envoy-proxy "$directory/chart.yaml" "$directory/envoy-proxy.yaml" \
       "${layers[@]}" || die 'phase03.ui.could_not_resolve_the_envoy_proxy_12347b28'
     layers+=("$directory/envoy-proxy.yaml")
@@ -1147,7 +1304,7 @@ install_downloaded_chart() {
     args+=(--set-string "global.images.envoyGateway.image=$proxy_image")
   fi
   prepare_renderer "$release"
-  say 'phase03.ui.rendering_the_selected_chart_again_0ef8b373' "$KUBE_VERSION"
+  ui_printf 'phase03.ui.rendering_the_selected_chart_again_0ef8b373' "$KUBE_VERSION"
   kubectl --request-timeout=15s api-versions > "$directory/api-versions.txt" || die 'phase03.ui.could_not_discover_the_cluster_api_838bbb6a'
   local api
   local -a preflight_args=(--include-crds) api_args=()
@@ -1159,6 +1316,11 @@ install_downloaded_chart() {
     > "$directory/preflight.yaml" || die 'phase03.ui.chart_preflight_failed_review_its_5f8b4dd3'
   source_tool check-apis "$directory/preflight.yaml" "$directory/api-versions.txt" \
     || die 'phase03.ui.chart_preflight_failed_review_its_5f8b4dd3'
+  if [ "$release" = kube-prometheus-stack ] && [ -n "${ATLAS_MONITORING_MODE:-}" ]; then
+    python3 "$SCRIPT_DIR/scripts/addons/monitoring_topology.py" \
+      --mode "$ATLAS_MONITORING_MODE" --verify-rendered-manifest "$directory/preflight.yaml" \
+      || die 'phase03.monitoring.topology_chart_mode_mismatch'
+  fi
   ui_printf 'phase03.ui.preflight_passed_this_does_not_rep_9f1dff03'
   if ! helm upgrade --install "$release" "$chart" --namespace "$namespace" \
       --create-namespace --wait --atomic --timeout 15m --reset-values "${RENDER_ARGS[@]}" "${args[@]}"; then
@@ -1273,7 +1435,7 @@ install_chart() {
     || die 'phase03.ui.no_compatible_stable_chart_was_fou_460fbc69'
   version="$(ask "$(ui_printf 'phase03.ui.chart_version_for_s_1b3b114d' "$chart")" "$version")"
   valid_version "$version" || die 'phase03.ui.chart_version_must_be_a_release_ve_24855651'
-  say 'phase03.ui.installing_s_s_s_in_s_75ed73a0' "$release" "$chart" "$version" "$namespace"
+  ui_printf 'phase03.ui.installing_s_s_s_in_s_75ed73a0' "$release" "$chart" "$version" "$namespace"
   source_tool archive "$metadata" "$version" "$archive_dir/chart.tgz" || download_failure
   helm show chart "$archive_dir/chart.tgz" | source_tool check-chart \
     "${chart#*/}" "$version" || die 'phase03.ui.downloaded_chart_metadata_does_not_e9834ae5'
@@ -1297,7 +1459,7 @@ install_oci_chart() {
   version="$(ask 'phase03.ui.envoy_gateway_chart_version_8d3da7af' "$version")"
   valid_version "$version" || die 'phase03.ui.invalid_envoy_gateway_version_8a3285ae'
   selected="$(source_tool oci "$ref")" || download_failure
-  say 'phase03.ui.downloading_s_from_s_c69e9fed' "$ref" "$selected"
+  ui_printf 'phase03.ui.downloading_s_from_s_c69e9fed' "$ref" "$selected"
   helm pull "$selected" --version "$version" --destination "$archive_dir" || download_failure
   local -a archives=("$archive_dir"/*.tgz)
   [ "${#archives[@]}" -eq 1 ] && [ -f "${archives[0]}" ] || download_failure
@@ -1370,7 +1532,13 @@ is_bad_iscsi_version "$installed_version" && missing=1
 
 if [ "$missing" -eq 1 ]; then
   printf '[INFO] Updating apt metadata and installing required packages.\n' >&2
-  DEBIAN_FRONTEND=noninteractive apt-get update >&2 || fail 'apt-get update failed on this node.'
+  apt_update_attempt=0
+  until DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 update >&2; do
+    apt_update_attempt=$((apt_update_attempt + 1))
+    [ "$apt_update_attempt" -lt 3 ] || fail 'apt-get update failed on this node after three attempts.'
+    printf '[WARN] apt-get update failed; retrying after waiting for concurrent package activity.\n' >&2
+    sleep 10
+  done
   candidate="$(apt-cache policy open-iscsi | awk '/Candidate:/ && !found {candidate=$2; found=1} END {print candidate}')"
   printf '[INFO] open-iscsi apt candidate: %s\n' "${candidate:-unavailable}" >&2
   safe_version=''
@@ -1402,7 +1570,8 @@ if [ "$missing" -eq 1 ]; then
   else
     printf '[INFO] Keeping installed safe open-iscsi version %s.\n' "$installed_version" >&2
   fi
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades --no-install-recommends "${packages[@]}" >&2
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 \
+    install -y --allow-downgrades --no-install-recommends "${packages[@]}" >&2
 fi
 
 install -d -m 0755 /etc/modules-load.d
@@ -1551,7 +1720,7 @@ description() {
 
 install_selected() {
   local choice="$1" replicas retention storage_class size grafana_size alert_size password pass_file
-  local loki_values alloy_values provider domain owner velero_values nfs_server nfs_path sc reclaim password_generated
+  local provider domain owner velero_values nfs_server nfs_path sc reclaim password_generated
   local version existing_crd pool_range pool_name current sources service_type
   local replicas default_class longhorn_minor default_storage node_count replica_default
   EXTRA_VALUES=()
@@ -1570,13 +1739,56 @@ install_selected() {
       ;;
     3)
       prepare_release cert-manager cert-manager || return 0
+      EXTRA_VALUES+=(--set prometheus.enabled=true)
       optional_values_arg
       install_chart jetstack https://charts.jetstack.io jetstack/cert-manager \
         cert-manager cert-manager --set crds.enabled=true "${EXTRA_VALUES[@]}"
+      if ! release_present kube-prometheus-stack monitoring; then
+        ui_printf 'phase03.monitoring.cert_manager_metrics_without_prometheus'
+      fi
       ui_printf 'phase03.ui.next_create_an_issuer_or_clusteris_143ff0f7'
       ;;
     4)
-      prepare_release kube-prometheus-stack monitoring || return 0
+      local recorded_mode
+      recorded_mode="$(monitoring_topology_mode)" \
+        || die 'phase03.monitoring.topology_marker_read_failed'
+      if [ "$recorded_mode" = center ]; then
+        ui_printf 'phase03.monitoring.center_migration_manual'
+        return 1
+      fi
+      if [ -z "$recorded_mode" ] && [ -z "${ATLAS_MONITORING_MODE:-}" ] \
+        && ! release_present kube-prometheus-stack monitoring; then
+        die 'phase03.monitoring.topology_guided_required'
+      fi
+      if { [ "$recorded_mode" = agent ] && [ "${ATLAS_MONITORING_MODE:-}" != agent ]; } \
+        || { [ "$recorded_mode" = center ] && [ "${ATLAS_MONITORING_MODE:-}" != center ]; }; then
+        die 'phase03.monitoring.topology_requires_guided_mode'
+      fi
+      if [ "${ATLAS_MONITORING_MODE:-}" = agent ]; then
+        local cluster_id remote_write_url remote_token_secret remote_token_key remote_ca_secret
+        cluster_id="$ATLAS_MONITORING_CLUSTER_ID"
+        remote_write_url="$ATLAS_REMOTE_WRITE_URL"
+        remote_token_secret="$ATLAS_REMOTE_WRITE_SECRET"
+        remote_token_key="$ATLAS_REMOTE_WRITE_SECRET_KEY"
+        remote_ca_secret="$ATLAS_REMOTE_WRITE_CA_SECRET"
+        prepare_release kube-prometheus-stack monitoring || return 0
+        local agent_values_args=(--mode agent \
+          --cluster-id "$cluster_id" --remote-write-url "$remote_write_url" \
+          --token-secret "$remote_token_secret" --token-key "$remote_token_key")
+        [ -z "$remote_ca_secret" ] || agent_values_args+=(--ca-secret "$remote_ca_secret")
+        python3 "$SCRIPT_DIR/scripts/addons/monitoring_topology.py" "${agent_values_args[@]}" \
+          > "$TMP_DIR/monitoring-agent.yaml" \
+          || die 'phase03.monitoring.topology_values_failed'
+        EXTRA_VALUES=(-f "$TMP_DIR/monitoring-agent.yaml")
+        install_chart prometheus-community https://prometheus-community.github.io/helm-charts \
+          prometheus-community/kube-prometheus-stack kube-prometheus-stack monitoring \
+          "${EXTRA_VALUES[@]}"
+        return
+      fi
+      if ! prepare_release kube-prometheus-stack monitoring; then
+        logging_monitoring_reconcile
+        return
+      fi
       if [ "$EXISTING" -eq 0 ]; then
         password_generated=0
         retention="$(ask 'phase03.ui.prometheus_retention_for_example_1_a31e8718' 15d)"
@@ -1636,7 +1848,24 @@ EOF
           yes_no 'phase03.ui.monitoring_data_will_be_ephemeral_474576fe' no || return 0
         fi
         EXTRA_VALUES=(-f "$TMP_DIR/monitoring.yaml" --set-file "grafana.adminPassword=$pass_file")
+        ui_printf 'phase03.monitoring.email_selection_explain'
+        if yes_no 'phase03.monitoring.email_selection_prompt' no; then
+          EXTRA_VALUES+=(--set-string 'alertmanager.alertmanagerSpec.alertmanagerConfigMatcherStrategy.type=OnNamespaceExceptForAlertmanagerNamespace')
+          EXTRA_VALUES+=(--set-string 'alertmanager.alertmanagerSpec.alertmanagerConfigSelector.matchLabels.atlas-kubekit\.io/managed-by=monitoring')
+        fi
       fi
+      if [ "${ATLAS_MONITORING_MODE:-}" = center ]; then
+        python3 "$SCRIPT_DIR/scripts/addons/monitoring_topology.py" --mode center --lang "$ATLAS_LANG" \
+          > "$TMP_DIR/monitoring-safe-defaults.yaml" \
+          || die 'phase03.monitoring.topology_values_failed'
+      else
+        python3 "$SCRIPT_DIR/scripts/addons/monitoring_values.py" --safe-defaults --lang "$ATLAS_LANG" \
+          > "$TMP_DIR/monitoring-safe-defaults.yaml" \
+          || die 'phase03.ui.could_not_create_safe_monitoring_defaults'
+      fi
+      EXTRA_VALUES+=(-f "$TMP_DIR/monitoring-safe-defaults.yaml")
+      ui_printf 'phase03.monitoring.kube_proxy_metrics_disabled'
+      ui_printf 'phase03.monitoring.grafana_recreate_strategy'
       optional_values_arg
       install_chart prometheus-community https://prometheus-community.github.io/helm-charts \
         prometheus-community/kube-prometheus-stack kube-prometheus-stack monitoring \
@@ -1645,18 +1874,101 @@ EOF
         ui_printf 'phase03.ui.generated_grafana_admin_password_r_1e97bab8' "$(cat "$pass_file")"
       fi
       ui_printf 'phase03.ui.grafana_admin_password_is_also_sto_40bddedd'
+      ui_printf 'phase03.monitoring.email_hint'
+      longhorn_monitoring_hint
+      cilium_monitoring_hint
       ;;
     5)
+      local logging_storage_default logging_storage_class logging_storage_size logging_retention logging_namespaces
+      local recorded_topology_mode
+      recorded_topology_mode="$(monitoring_topology_mode)" \
+        || die 'phase03.monitoring.topology_marker_read_failed'
+      if [ "$recorded_topology_mode" = center ]; then
+        ui_printf 'phase03.monitoring.center_migration_manual'
+        return 1
+      fi
+      if [ "$recorded_topology_mode" = agent ] && [ "${ATLAS_MONITORING_MODE:-}" != agent ]; then
+        die 'phase03.monitoring.topology_requires_guided_mode'
+      fi
+      if [ "${ATLAS_MONITORING_MODE:-}" = agent ]; then
+        local remote_loki_url remote_loki_secret remote_loki_key remote_loki_ca
+        remote_loki_url="$ATLAS_REMOTE_LOKI_URL"
+        remote_loki_secret="$ATLAS_REMOTE_LOKI_SECRET"
+        remote_loki_key="$ATLAS_REMOTE_LOKI_SECRET_KEY"
+        remote_loki_ca="$ATLAS_REMOTE_LOKI_CA_SECRET"
+        logging_namespaces="$ATLAS_LOGGING_NAMESPACES"
+        local log_args=(--retention-days 7 --storage-class none --namespaces "$logging_namespaces" \
+          --remote-loki-url "$remote_loki_url" --remote-token-secret "$remote_loki_secret" \
+          --remote-token-key "$remote_loki_key" --cluster-id "$ATLAS_MONITORING_CLUSTER_ID")
+        [ -z "$remote_loki_ca" ] || log_args+=(--remote-ca-secret "$remote_loki_ca")
+        python3 "$SCRIPT_DIR/scripts/addons/logging_values.py" "${log_args[@]}" \
+          --loki-output "$TMP_DIR/loki-unused.yaml" --alloy-output "$TMP_DIR/alloy-remote.yaml" \
+          || die 'phase03.monitoring.logs_values_generation_failed'
+        prepare_release alloy logging \
+          || { ui_printf 'phase03.monitoring.full_setup_logs_incomplete'; return 1; }
+        EXTRA_VALUES=(-f "$TMP_DIR/alloy-remote.yaml")
+        install_chart grafana https://grafana.github.io/helm-charts \
+          grafana/alloy alloy logging "${EXTRA_VALUES[@]}"
+        ui_printf 'phase03.monitoring.agent_logs_configured'
+        return
+      fi
+      kubectl get storageclass -o json > "$TMP_DIR/logging-storageclasses.json" \
+        || die 'phase03.monitoring.logs_storage_class_inspect_failed'
+      logging_storage_default="$(python3 - "$TMP_DIR/logging-storageclasses.json" <<'PY'
+import json,sys
+try:
+    doc=json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print("none")
+    raise SystemExit
+for item in doc.get("items", []):
+    annotations=item.get("metadata", {}).get("annotations", {})
+    if annotations.get("storageclass.kubernetes.io/is-default-class") == "true" or annotations.get("storageclass.beta.kubernetes.io/is-default-class") == "true":
+        print(item["metadata"]["name"])
+        break
+else:
+    print("none")
+PY
+)"
+      [ -n "$logging_storage_default" ] || logging_storage_default=none
+      ui_printf 'phase03.monitoring.logs_install_intro'
+      ui_printf 'phase03.monitoring.logs_single_replica_warning'
+      ui_printf 'phase03.monitoring.logs_privacy_warning'
+      logging_retention="$(ask 'phase03.monitoring.logs_retention_days' 7)"
+      [[ "$logging_retention" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$logging_retention" -le 365 ] \
+        || die 'phase03.monitoring.logs_invalid_retention'
+      logging_storage_class="$(ask 'phase03.monitoring.logs_storage_class' "$logging_storage_default")"
+      if [ "$logging_storage_class" = none ]; then
+        ui_printf 'phase03.monitoring.logs_ephemeral_warning'
+        yes_no 'phase03.monitoring.logs_confirm_ephemeral' no || return 0
+      else
+        valid_dns "$logging_storage_class" || die 'phase03.monitoring.logs_invalid_storage_class'
+        kubectl get storageclass "$logging_storage_class" >/dev/null 2>&1 \
+          || die 'phase03.monitoring.logs_storage_class_missing' "$logging_storage_class"
+      fi
+      logging_storage_size="$(ask 'phase03.monitoring.logs_storage_size' 30Gi)"
+      [[ "$logging_storage_size" =~ ^[1-9][0-9]*(Mi|Gi|Ti)$ ]] \
+        || die 'phase03.monitoring.logs_invalid_storage_size'
+      logging_namespaces="$(ask 'phase03.monitoring.logs_namespaces' all)"
+      python3 "$SCRIPT_DIR/scripts/addons/logging_values.py" \
+        --retention-days "$logging_retention" --storage-class "$logging_storage_class" \
+        --storage-size "$logging_storage_size" --namespaces "$logging_namespaces" \
+        --loki-output "$TMP_DIR/loki-generated-values.yaml" \
+        --alloy-output "$TMP_DIR/alloy-generated-values.yaml" \
+        || die 'phase03.monitoring.logs_values_generation_failed'
       if prepare_release loki logging; then
-        loki_values="$(values_file 'phase03.ui.loki_storage_deployment_helm_value_d29a15dc' yes)"
+        EXTRA_VALUES=(-f "$TMP_DIR/loki-generated-values.yaml")
+        optional_values_arg
         install_chart grafana-community https://grafana-community.github.io/helm-charts \
-          grafana-community/loki loki logging -f "$loki_values"
+          grafana-community/loki loki logging "${EXTRA_VALUES[@]}"
       fi
       if prepare_release alloy logging; then
-        alloy_values="$(values_file 'phase03.ui.alloy_log_collection_helm_values_55253996' yes)"
+        EXTRA_VALUES=(-f "$TMP_DIR/alloy-generated-values.yaml")
+        optional_values_arg
         install_chart grafana https://grafana.github.io/helm-charts \
-          grafana/alloy alloy logging -f "$alloy_values"
+          grafana/alloy alloy logging "${EXTRA_VALUES[@]}"
       fi
+      ui_printf 'phase03.monitoring.logs_install_boundary'
       ;;
     6)
       prepare_release argocd argocd || return 0
@@ -1804,9 +2116,22 @@ EOF
       ;;
     14)
       prepare_release keda keda || return 0
+      if release_present kube-prometheus-stack monitoring; then
+        python3 "$SCRIPT_DIR/scripts/addons/keda_values.py" --prometheus-release kube-prometheus-stack \
+          > "$TMP_DIR/keda-monitoring.yaml" || die 'phase03.ui.keda_monitoring_values_failed'
+      else
+        python3 "$SCRIPT_DIR/scripts/addons/keda_values.py" > "$TMP_DIR/keda-monitoring.yaml" \
+          || die 'phase03.ui.keda_monitoring_values_failed'
+      fi
+      EXTRA_VALUES=(-f "$TMP_DIR/keda-monitoring.yaml")
       optional_values_arg
       install_chart kedacore https://kedacore.github.io/charts kedacore/keda \
         keda keda "${EXTRA_VALUES[@]}"
+      if release_present kube-prometheus-stack monitoring; then
+        ui_printf 'phase03.monitoring.keda_metrics_enabled'
+      else
+        ui_printf 'phase03.monitoring.keda_metrics_enabled_without_prometheus'
+      fi
       ui_printf 'phase03.ui.next_define_a_workload_scaledobjec_de70bf31'
       ;;
     15)
@@ -1945,7 +2270,303 @@ for item in doc.get("items", []):
         longhorn longhorn-system "${EXTRA_VALUES[@]}"
       kubectl get storageclass longhorn >/dev/null 2>&1 || ui_printf 'phase03.ui.longhorn_storageclass_is_not_prese_e914c997'
       ui_printf 'phase03.ui.longhorn_data_path_defaults_to_var_93970ef2'
+      longhorn_monitoring_hint
+      cilium_monitoring_hint
       ;;
+    17)
+      kubectl -n monitoring get prometheuses.monitoring.coreos.com >/dev/null 2>&1 \
+        || die 'phase03.monitoring.blackbox_requires_prometheus'
+      prepare_release blackbox-exporter monitoring || return 0
+      python3 "$SCRIPT_DIR/scripts/addons/blackbox_values.py" --safe-defaults \
+        > "$TMP_DIR/blackbox-safe-defaults.yaml" \
+        || die 'phase03.monitoring.blackbox_values_failed'
+      EXTRA_VALUES=(-f "$TMP_DIR/blackbox-safe-defaults.yaml")
+      optional_values_arg
+      install_chart prometheus-community https://prometheus-community.github.io/helm-charts \
+        prometheus-community/prometheus-blackbox-exporter blackbox-exporter monitoring \
+        "${EXTRA_VALUES[@]}"
+      ui_printf 'phase03.monitoring.blackbox_next_steps'
+      ;;
+  esac
+  if [ "$choice" = 3 ] || [ "$choice" = 4 ] || [ "$choice" = 14 ]; then
+    cert_manager_monitoring_reconcile
+    keda_monitoring_reconcile
+  fi
+  if [ "$choice" = 4 ] || [ "$choice" = 5 ]; then
+    logging_monitoring_reconcile
+  fi
+}
+
+logging_monitoring_reconcile() {
+  local component kubeconfig="${KUBECONFIG:-$HOME/.kube/config}"
+  local -a installed=()
+  release_present kube-prometheus-stack monitoring || return 0
+  for component in loki alloy; do
+    if release_present "$component" logging; then
+      installed+=("$component")
+    fi
+  done
+  [ "${#installed[@]}" -gt 0 ] || return 0
+  if [[ "$kubeconfig" == *:* ]]; then
+    kubeconfig="$TMP_DIR/logging-monitoring-kubeconfig"
+    if ! (umask 077; kubectl config view --minify --flatten --raw > "$kubeconfig"); then
+      ui_printf 'phase03.monitoring.logs_metrics_reconcile_failed'
+      return 1
+    fi
+  fi
+  if ! python3 "$SCRIPT_DIR/scripts/addons/logging_monitoring.py" \
+    --kubeconfig "$kubeconfig" --lang "$ATLAS_LANG" "${installed[@]}"; then
+    ui_printf 'phase03.monitoring.logs_metrics_reconcile_failed'
+    return 1
+  fi
+  ui_printf 'phase03.monitoring.logs_metrics_reconciled'
+}
+
+cert_manager_monitoring_reconcile() {
+  local prometheus_json namespace_json manifest owner
+  if ! release_present cert-manager cert-manager || ! release_present kube-prometheus-stack monitoring; then
+    return 0
+  fi
+  kubectl get crd podmonitors.monitoring.coreos.com >/dev/null 2>&1 || return 0
+  prometheus_json="$TMP_DIR/cert-manager-prometheus.json"
+  namespace_json="$TMP_DIR/cert-manager-namespace.json"
+  manifest="$TMP_DIR/cert-manager-podmonitor.json"
+  kubectl -n monitoring get prometheus kube-prometheus-stack-prometheus -o json > "$prometheus_json" \
+    || { ui_printf 'phase03.monitoring.cert_manager_monitor_not_selected'; return 0; }
+  kubectl get namespace cert-manager -o json > "$namespace_json" \
+    || { ui_printf 'phase03.monitoring.cert_manager_monitor_not_selected'; return 0; }
+  if ! python3 "$SCRIPT_DIR/scripts/addons/cert_manager_monitoring.py" \
+    --prometheus-release kube-prometheus-stack --prometheus-json "$prometheus_json" \
+    --namespace-json "$namespace_json" > "$manifest" 2>/dev/null; then
+    ui_printf 'phase03.monitoring.cert_manager_monitor_not_selected'
+    return 0
+  fi
+  if kubectl -n cert-manager get podmonitor atlas-cert-manager-metrics >/dev/null 2>&1; then
+    owner="$(kubectl -n cert-manager get podmonitor atlas-cert-manager-metrics \
+      -o jsonpath='{.metadata.labels.atlas-kubekit\.io/managed-by}')"
+    [ "$owner" = monitoring ] || die 'phase03.monitoring.cert_manager_monitor_name_conflict'
+  fi
+  kubectl apply -f "$manifest" >/dev/null \
+    || die 'phase03.monitoring.cert_manager_monitor_apply_failed'
+  ui_printf 'phase03.monitoring.cert_manager_metrics_monitor_enabled'
+}
+
+keda_monitoring_reconcile() {
+  local prometheus_json service_json namespace_json monitors_json manifest owner rc
+  if ! release_present keda keda || ! release_present kube-prometheus-stack monitoring; then
+    return 0
+  fi
+  kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1 || return 0
+  prometheus_json="$TMP_DIR/keda-prometheus.json"
+  service_json="$TMP_DIR/keda-operator-service.json"
+  namespace_json="$TMP_DIR/keda-prometheus-namespace.json"
+  monitors_json="$TMP_DIR/keda-existing-servicemonitors.json"
+  manifest="$TMP_DIR/keda-servicemonitor.json"
+  kubectl -n monitoring get prometheus kube-prometheus-stack-prometheus -o json > "$prometheus_json" \
+    || { ui_printf 'phase03.monitoring.keda_monitor_not_ready'; return 0; }
+  kubectl -n keda get service -l app.kubernetes.io/name=keda-operator,app.kubernetes.io/instance=keda \
+    -o json > "$service_json" \
+    || { ui_printf 'phase03.monitoring.keda_monitor_not_ready'; return 0; }
+  if ! python3 - "$service_json" > "$TMP_DIR/keda-operator-service-selected.json" <<'PY'
+import json, sys
+try:
+    items = json.load(open(sys.argv[1], encoding="utf-8")).get("items", [])
+except (OSError, ValueError, TypeError):
+    raise SystemExit(1)
+items = [item for item in items if item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name") == "keda-operator"]
+if len(items) != 1:
+    raise SystemExit(1)
+print(json.dumps(items[0]))
+PY
+  then
+    ui_printf 'phase03.monitoring.keda_monitor_not_ready'
+    return 0
+  fi
+  service_json="$TMP_DIR/keda-operator-service-selected.json"
+  kubectl get namespace monitoring -o json > "$namespace_json" \
+    || { ui_printf 'phase03.monitoring.keda_monitor_not_ready'; return 0; }
+  kubectl get servicemonitors.monitoring.coreos.com --all-namespaces -o json > "$monitors_json" \
+    || { ui_printf 'phase03.monitoring.keda_monitor_not_ready'; return 0; }
+  if python3 "$SCRIPT_DIR/scripts/addons/keda_service_monitor.py" \
+    --prometheus-json "$prometheus_json" --service-json "$service_json" \
+    --prometheus-namespace-labels-json "$namespace_json" --monitors-json "$monitors_json" \
+    --release kube-prometheus-stack > "$manifest" 2>/dev/null; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -eq 4 ]; then
+    ui_printf 'phase03.monitoring.keda_monitor_already_selected'
+    return 0
+  elif [ "$rc" -ne 0 ]; then
+    ui_printf 'phase03.monitoring.keda_monitor_not_ready'
+    return 0
+  fi
+  if kubectl -n monitoring get servicemonitor atlas-keda-operator-metrics >/dev/null 2>&1; then
+    owner="$(kubectl -n monitoring get servicemonitor atlas-keda-operator-metrics \
+      -o jsonpath='{.metadata.labels.atlas-kubekit\.io/managed-by}')"
+    [ "$owner" = monitoring ] || die 'phase03.monitoring.keda_monitor_name_conflict'
+  fi
+  kubectl apply -f "$manifest" >/dev/null \
+    || die 'phase03.monitoring.keda_monitor_apply_failed'
+  ui_printf 'phase03.monitoring.keda_monitor_enabled'
+}
+
+monitoring_full_setup() {
+  local resource prometheus_statefulsets alertmanager_statefulsets mode="${1:-legacy}" recorded_topology_mode
+  local ATLAS_MONITORING_MODE=''
+  ui_printf 'phase03.monitoring.full_setup_intro'
+
+  recorded_topology_mode="$(monitoring_topology_mode)" \
+    || die 'phase03.monitoring.topology_marker_read_failed'
+  if [ "$mode" = legacy ] && [ -n "$recorded_topology_mode" ]; then
+    die 'phase03.monitoring.topology_requires_guided_mode'
+  fi
+  case "$mode" in
+    center|agent) ATLAS_MONITORING_MODE="$mode";;
+    *) ATLAS_MONITORING_MODE='';;
+  esac
+  install_selected 4 || { ui_printf 'phase03.monitoring.full_setup_prometheus_incomplete'; return 1; }
+  if ! release_present kube-prometheus-stack monitoring; then
+    ui_printf 'phase03.monitoring.full_setup_prometheus_incomplete'
+    return 1
+  fi
+  prometheus_statefulsets="$(kubectl -n monitoring get statefulsets \
+    -l 'release=kube-prometheus-stack,app.kubernetes.io/name=prometheus' -o name 2>/dev/null)" \
+    || { ui_printf 'phase03.monitoring.full_setup_prometheus_incomplete'; return 1; }
+  alertmanager_statefulsets=''
+  if [ "$mode" != agent ]; then
+    alertmanager_statefulsets="$(kubectl -n monitoring get statefulsets \
+      -l 'release=kube-prometheus-stack,app.kubernetes.io/name=alertmanager' -o name 2>/dev/null)" \
+      || { ui_printf 'phase03.monitoring.full_setup_prometheus_incomplete'; return 1; }
+  fi
+  if [ -z "$prometheus_statefulsets" ] || { [ "$mode" != agent ] && [ -z "$alertmanager_statefulsets" ]; }; then
+    ui_printf 'phase03.monitoring.full_setup_prometheus_incomplete'
+    return 1
+  fi
+  while IFS= read -r resource; do
+    kubectl -n monitoring rollout status "$resource" --timeout=600s \
+      || { ui_printf 'phase03.monitoring.full_setup_prometheus_incomplete'; return 1; }
+  done <<< "$prometheus_statefulsets"
+  if [ -n "$alertmanager_statefulsets" ]; then
+    while IFS= read -r resource; do
+      kubectl -n monitoring rollout status "$resource" --timeout=600s \
+        || { ui_printf 'phase03.monitoring.full_setup_prometheus_incomplete'; return 1; }
+    done <<< "$alertmanager_statefulsets"
+  fi
+
+  install_selected 5 || { ui_printf 'phase03.monitoring.full_setup_logs_incomplete'; return 1; }
+  if [ "$mode" = agent ]; then
+    if ! release_present alloy logging; then
+      ui_printf 'phase03.monitoring.full_setup_logs_incomplete'
+      return 1
+    fi
+  else
+    if ! release_present loki logging || ! release_present alloy logging; then
+      ui_printf 'phase03.monitoring.full_setup_logs_incomplete'
+      return 1
+    fi
+  fi
+  if [ "$mode" != agent ]; then
+    kubectl -n logging wait --for=condition=Ready pod -l app.kubernetes.io/instance=loki --timeout=600s \
+      || { ui_printf 'phase03.monitoring.full_setup_logs_incomplete'; return 1; }
+  fi
+  kubectl -n logging wait --for=condition=Ready pod -l app.kubernetes.io/instance=alloy --timeout=600s \
+    || { ui_printf 'phase03.monitoring.full_setup_logs_incomplete'; return 1; }
+
+  if [ "$mode" = agent ]; then
+    ensure_monitoring_topology_marker agent "$ATLAS_MONITORING_CLUSTER_ID"
+    ui_printf 'phase03.monitoring.agent_setup_complete' "$ATLAS_MONITORING_CLUSTER_ID"
+    ATLAS_MONITORING_MODE=''
+    return 0
+  fi
+  if [ "$mode" = center ]; then
+    ensure_monitoring_topology_marker center
+  fi
+  if ! ATLAS_ADDON_SOURCE_CONFIG="$SOURCE_CONFIG" python3 "$SCRIPT_DIR/scripts/addons/monitoring_notification_setup.py" \
+      --lang "$ATLAS_LANG" --require-complete; then
+    ui_printf 'phase03.monitoring.full_setup_partial'
+    ATLAS_MONITORING_MODE=''
+    return 1
+  fi
+  ATLAS_MONITORING_MODE=''
+  ui_printf 'phase03.monitoring.full_setup_complete'
+}
+
+monitoring_topology_setup() {
+  local mode cluster_id remote_write_url remote_token_secret remote_token_key remote_ca_secret
+  local remote_loki_url remote_loki_secret remote_loki_key remote_loki_ca logging_namespaces
+  mode=agent
+  [ "$ATLAS_CLUSTER_PURPOSE" = monitoring ] && mode=center
+  case "$mode" in
+    center)
+      ui_printf 'phase03.monitoring.center_security_boundary'
+      yes_no 'phase03.monitoring.confirm_center_topology' no || return 0
+      validate_monitoring_topology_marker center
+      monitoring_full_setup center
+      ;;
+    agent)
+      [ "$ATLAS_CLUSTER_PURPOSE" = application ] || die 'phase03.monitoring.cluster_purpose_mismatch'
+      ui_printf 'phase03.monitoring.agent_security_boundary'
+      cluster_id="$(ask 'phase03.monitoring.cluster_id' '')"
+      remote_write_url="$(ask 'phase03.monitoring.remote_write_url' '')"
+      remote_token_secret="$(ask 'phase03.monitoring.remote_write_secret' '')"
+      remote_token_key="$(ask 'phase03.monitoring.remote_write_secret_key' token)"
+      remote_ca_secret="$(ask 'phase03.monitoring.remote_write_ca_secret' none)"
+      remote_loki_url="$(ask 'phase03.monitoring.remote_loki_url' '')"
+      remote_loki_secret="$(ask 'phase03.monitoring.remote_loki_secret' '')"
+      remote_loki_key="$(ask 'phase03.monitoring.remote_loki_secret_key' token)"
+      remote_loki_ca="$(ask 'phase03.monitoring.remote_loki_ca_secret' none)"
+      logging_namespaces="$(ask 'phase03.monitoring.logs_namespaces' all)"
+      [[ "$cluster_id" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] && [ "${#cluster_id}" -le 63 ] \
+        || die 'phase03.monitoring.cluster_id_invalid'
+      [ -n "$remote_write_url" ] && [ -n "$remote_token_secret" ] \
+        || die 'phase03.monitoring.remote_write_required'
+      [ -n "$remote_loki_url" ] && [ -n "$remote_loki_secret" ] \
+        || die 'phase03.monitoring.remote_loki_required'
+      ensure_monitoring_secret_key "$remote_token_secret" "$remote_token_key" \
+        || die 'phase03.monitoring.remote_secret_key_missing' "$remote_token_secret" "$remote_token_key"
+      if [ "$remote_ca_secret" = none ]; then remote_ca_secret=''; else
+        ensure_monitoring_secret_key "$remote_ca_secret" ca.crt \
+          || die 'phase03.monitoring.remote_secret_key_missing' "$remote_ca_secret" ca.crt
+      fi
+      ensure_monitoring_secret_key "$remote_loki_secret" "$remote_loki_key" \
+        || die 'phase03.monitoring.remote_secret_key_missing' "$remote_loki_secret" "$remote_loki_key"
+      if [ "$remote_loki_ca" = none ]; then remote_loki_ca=''; else
+        ensure_monitoring_secret_key "$remote_loki_ca" ca.crt \
+          || die 'phase03.monitoring.remote_secret_key_missing' "$remote_loki_ca" ca.crt
+      fi
+      local agent_values_args=(--mode agent --cluster-id "$cluster_id" \
+        --remote-write-url "$remote_write_url" --token-secret "$remote_token_secret" \
+        --token-key "$remote_token_key")
+      [ -z "$remote_ca_secret" ] || agent_values_args+=(--ca-secret "$remote_ca_secret")
+      python3 "$SCRIPT_DIR/scripts/addons/monitoring_topology.py" "${agent_values_args[@]}" \
+        >/dev/null || die 'phase03.monitoring.topology_values_failed'
+      local log_values_args=(--retention-days 7 --storage-class none --namespaces "$logging_namespaces" \
+        --remote-loki-url "$remote_loki_url" --remote-token-secret "$remote_loki_secret" \
+        --remote-token-key "$remote_loki_key" --cluster-id "$cluster_id")
+      [ -z "$remote_loki_ca" ] || log_values_args+=(--remote-ca-secret "$remote_loki_ca")
+      python3 "$SCRIPT_DIR/scripts/addons/logging_values.py" "${log_values_args[@]}" \
+        --loki-output "$TMP_DIR/loki-unused.yaml" --alloy-output "$TMP_DIR/alloy-remote.yaml" \
+        || die 'phase03.monitoring.logs_values_generation_failed'
+      if release_present kube-prometheus-stack monitoring; then
+        kubectl -n monitoring get configmap atlas-monitoring-topology >/dev/null 2>&1 \
+          || die 'phase03.monitoring.topology_migration_required'
+      fi
+      validate_monitoring_topology_marker agent "$cluster_id"
+      local ATLAS_MONITORING_CLUSTER_ID="$cluster_id"
+      local ATLAS_REMOTE_WRITE_URL="$remote_write_url"
+      local ATLAS_REMOTE_WRITE_SECRET="$remote_token_secret"
+      local ATLAS_REMOTE_WRITE_SECRET_KEY="$remote_token_key"
+      local ATLAS_REMOTE_WRITE_CA_SECRET="$remote_ca_secret"
+      local ATLAS_REMOTE_LOKI_URL="$remote_loki_url"
+      local ATLAS_REMOTE_LOKI_SECRET="$remote_loki_secret"
+      local ATLAS_REMOTE_LOKI_SECRET_KEY="$remote_loki_key"
+      local ATLAS_REMOTE_LOKI_CA_SECRET="$remote_loki_ca"
+      local ATLAS_LOGGING_NAMESPACES="$logging_namespaces"
+      monitoring_full_setup agent
+      ;;
+    *) ui_printf 'phase03.monitoring.topology_mode_invalid'; return 1;;
   esac
 }
 
@@ -1953,7 +2574,15 @@ show_menu() {
   printf '\n================ '
   ui_printf phase03.menu.title "$ATLAS_KUBEKIT_VERSION"
   printf ' ================\n'
-  atlas_t phase03.menu.body
+  atlas_t phase03.menu.body | while IFS= read -r line; do
+    case "$line" in
+      " S) Download source"*|" S) 下载源"*)
+        ui_printf 'phase03.menu.blackbox'; printf '\n'
+        ui_printf 'phase03.menu.notification_setup'; printf '\n'
+        ui_printf 'phase03.menu.monitoring_full_setup'; printf '\n';;
+    esac
+    printf '%s\n' "$line"
+  done
   printf '\n'
   ui_printf 'phase03.ui.current_download_source_s_n_1ff66b12' "$(source_name)"
 }
@@ -1962,6 +2591,7 @@ show_menu() {
 # Always offer the saved source before the first add-on selection.
 select_download_source
 kubectl --request-timeout=10s get --raw=/readyz >/dev/null || die 'phase03.ui.kubernetes_api_is_not_ready_or_the_71ce0626'
+ATLAS_CLUSTER_PURPOSE="$(read_cluster_purpose)" || die 'phase03.monitoring.cluster_purpose_read_failed'
 refresh_cluster_version
 headlamp_reconcile_addon_rbac
 
@@ -1972,7 +2602,31 @@ while true; do
     0) exit 0;;
     l|L) select_language || exit 0;;
     s|S) select_download_source;;
-    1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16)
+    18)
+      ui_printf 'phase03.description.18'
+      local recorded_monitoring_mode
+      recorded_monitoring_mode="$(monitoring_topology_mode)" \
+        || die 'phase03.monitoring.topology_marker_read_failed'
+      if [ "$recorded_monitoring_mode" = agent ]; then
+        ui_printf 'phase03.monitoring.agent_security_boundary'
+      elif [ "$ATLAS_CLUSTER_PURPOSE" = application ]; then
+        ui_printf 'phase03.monitoring.cluster_purpose_mismatch'
+      elif yes_no 'phase03.ui.continue_to_installation_and_confi_80b353d4' no; then
+        ATLAS_ADDON_SOURCE_CONFIG="$SOURCE_CONFIG" python3 "$SCRIPT_DIR/scripts/addons/monitoring_notification_setup.py" --lang "$ATLAS_LANG" \
+          || ui_printf 'phase03.monitoring.setup_failed'
+      else
+        ui_printf 'phase03.ui.installation_cancelled_for_this_ad_885c6327'
+      fi
+      ;;
+    19)
+      ui_printf 'phase03.description.19'
+      if yes_no 'phase03.ui.continue_to_installation_and_confi_80b353d4' no; then
+        monitoring_topology_setup || true
+      else
+        ui_printf 'phase03.ui.installation_cancelled_for_this_ad_885c6327'
+      fi
+      ;;
+    1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17)
       ui_printf 'phase03.ui.n_add_on_details_n_89b4c49a'
       description "$choice"
       if yes_no 'phase03.ui.continue_to_installation_and_confi_80b353d4' no; then

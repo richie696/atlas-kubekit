@@ -12,6 +12,7 @@ PINNED_VERSIONS = pinned()
 CLUSTER_FIELDS = {
     "name",
     "profile",
+    "purpose",
     "apiVIP",
     "apiPort",
     "appVIP",
@@ -128,6 +129,7 @@ def normalize(data):
     values = dict(
         name=text(cluster["name"], r"[a-z][a-z0-9-]{0,62}"),
         profile=text(cluster.get("profile", "standard"), r"standard|test"),
+        purpose=text(cluster.get("purpose", "application"), r"application|monitoring"),
         apiVIP=ipv4(cluster["apiVIP"]),
         apiPort=integer(cluster.get("apiPort", 6443), 1, 65535),
         appVIP=ipv4(app) if app else "",
@@ -258,6 +260,7 @@ def deployment_rows(config):
     result = [("SSH_USER", data["ssh"]["user"]), ("CLUSTER_NAME", cluster["name"])]
     for field, key in [
         ("PROFILE", "profile"),
+        ("CLUSTER_PURPOSE", "purpose"),
         ("VIP", "apiVIP"),
         ("APP_INGRESS_VIP", "appVIP"),
         ("API_PORT", "apiPort"),

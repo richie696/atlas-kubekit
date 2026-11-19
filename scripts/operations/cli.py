@@ -21,9 +21,20 @@ from scripts.operations.navigation import menu
 from scripts.operations.commands import inspection, diagnostics as diagnostic_commands
 from scripts.operations.commands import materials as material_commands
 from scripts.operations.commands import protection as protection_commands
+from scripts.operations.commands import monitoring as monitoring_commands
+from scripts.operations.commands import observer_status
+from scripts.operations.commands import observer_install
 
 
 def perform(args, tr, context):
+    if args.action == "monitoring-observer-status":
+        return observer_status.perform(args, tr)
+    if args.action in ("monitoring-observer-install", "monitoring-observer-remove"):
+        return observer_install.perform(args, tr)
+    if args.action == "monitoring-inspect":
+        return monitoring_commands.perform(args, tr, context)
+    if args.action == "monitoring-coverage":
+        return monitoring_commands.coverage(args, tr, context)
     if args.action == "protection-status":
         return protection_commands.perform(args, tr, context)
     if args.action.startswith("materials-"):

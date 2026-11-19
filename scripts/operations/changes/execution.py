@@ -7,7 +7,7 @@ from .plans import load
 def execute(value, confirmation, coordinator, observe, apply, validate_parameters, progress=None):
     plan = load(value)
     if confirmation != plan.id:
-        raise OperationError("ops.error.confirm")
+        raise OperationError("ops.change.confirm_mismatch")
     parameters = validate_parameters(plan.parameters)
     if coordinator.client.cluster_identity() != plan.cluster_identity:
         raise OperationError("ops.change.wrong_cluster")

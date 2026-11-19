@@ -35,7 +35,7 @@ fi
 
 if command -v helm >/dev/null 2>&1 && kubectl -n kube-system get daemonset cilium >/dev/null 2>&1; then
   release_ok="$(helm list -n kube-system --filter '^cilium$' -o json | python3 -c 'import json,sys; x=json.load(sys.stdin); print("yes" if x and x[0].get("status")=="deployed" and x[0].get("chart")=="cilium-'"$CILIUM_VERSION"'" else "no")')"
-  values_ok="$(helm get values cilium -n kube-system -o json 2>/dev/null | python3 -c 'import json,sys; x=json.load(sys.stdin); print("yes" if x.get("ipam",{}).get("mode")=="kubernetes" and x.get("operator",{}).get("replicas")==int(sys.argv[1]) else "no")' "$CILIUM_OPERATOR_REPLICAS" || true)"
+  values_ok="$(helm get values cilium -n kube-system -o json 2>/dev/null | python3 -c 'import json,sys; x=json.load(sys.stdin); print("yes" if x.get("ipam",{}).get("mode")=="kubernetes" and x.get("operator",{}).get("replicas")==int(sys.argv[1]) and x.get("prometheus",{}).get("enabled") is True and x.get("operator",{}).get("prometheus",{}).get("enabled",True) is True else "no")' "$CILIUM_OPERATOR_REPLICAS" || true)"
   if [ "$release_ok" = yes ] && [ "$values_ok" = yes ]; then
     kubectl -n kube-system rollout status daemonset/cilium --timeout=10m
     kubectl -n kube-system rollout status deployment/cilium-operator --timeout=10m
@@ -69,6 +69,7 @@ else
 fi
 helm upgrade --install cilium "$chart" \
   --namespace kube-system --set ipam.mode=kubernetes --set "operator.replicas=${CILIUM_OPERATOR_REPLICAS}" \
+  --set prometheus.enabled=true --set operator.prometheus.enabled=true \
   --wait --timeout 10m
 kubectl -n kube-system rollout status daemonset/cilium --timeout=10m
 kubectl -n kube-system rollout status deployment/cilium-operator --timeout=10m

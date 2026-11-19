@@ -12,8 +12,8 @@ fi
 set -euo pipefail
 [ "${BASH_VERSINFO[0]}" -ge 4 ] || { printf '[ERROR] Bash 4 or newer is required\n' >&2; exit 2; }
 NODES=() LBS=() CPS=() WORKERS=() K8S_NODES=() JOIN_NODES=()
-STAGES=(setup-k8s-node.sh setup-lb.sh configure-registry-mirror.sh init-cluster.sh install-cilium.sh create-join-credentials.sh join-nodes.sh configure-coredns-ha.sh)
-NATIVE_HELPERS=(check-cluster.py enrollment.py storage.py repair-cluster.py repair-node.py containerd.py)
+STAGES=(setup-k8s-node.sh setup-lb.sh configure-registry-mirror.sh configure-control-plane-metrics.sh init-cluster.sh install-cilium.sh create-join-credentials.sh join-nodes.sh configure-coredns-ha.sh)
+NATIVE_HELPERS=(check-cluster.py enrollment.py storage.py repair-cluster.py repair-node.py containerd.py node-systemd-metrics.py lb-vip-metrics.py)
 STATE=/var/lib/k8s-deploy
 LIB=/usr/local/lib/k8s-deploy
 CONF=$STATE/cluster.conf
@@ -211,6 +211,7 @@ if [ -n "$CONFIG_INPUT" ]; then
     || die "$(atlas_t phase02.config.conflict)"
 fi
 PROFILE=standard
+CLUSTER_PURPOSE="${CONFIG_VALUES[CLUSTER_PURPOSE]:-}"
 SSH_READY=0
 read_manifest() {
   local address="$1" content="$2" line key value n
@@ -266,7 +267,7 @@ if [ -f "$CONF" ]; then
 elif [ -n "$CONFIG_INPUT" ]; then
   [ -t 0 ] && [ "${1:-}" != --resume ] || die 'The first run requires an interactive terminal'
   NODES=("${CONFIG_NODES[@]}")
-  for key in CLUSTER_NAME SSH_USER PROFILE VIP APP_INGRESS_VIP API_PORT VRRP_ID POD_CIDR SVC_CIDR LB_STATS_ALLOWED_CIDR LOCAL_REGISTRY_HOST; do
+  for key in CLUSTER_NAME SSH_USER PROFILE CLUSTER_PURPOSE VIP APP_INGRESS_VIP API_PORT VRRP_ID POD_CIDR SVC_CIDR LB_STATS_ALLOWED_CIDR LOCAL_REGISTRY_HOST; do
     printf -v "$key" '%s' "${CONFIG_VALUES[$key]}"
   done
   for n in "${CONFIG_NODES[@]}"; do
@@ -435,6 +436,14 @@ wait_reboot() {
   die "$n did not restore SSH within 450 seconds after reboot"
 }
 atlas_deploy_verify_materials
+if [ -z "${CLUSTER_PURPOSE:-}" ]; then
+  [ -n "$CONFIG_INPUT" ] || [ -t 0 ] || die "$(atlas_t phase02.error.cluster_purpose)"
+  CLUSTER_PURPOSE="$(ask "$(atlas_t phase02.prompt.cluster_purpose)" application)"
+fi
+case "$CLUSTER_PURPOSE" in application|monitoring) ;; *) die "$(atlas_t phase02.error.cluster_purpose)";; esac
+if [ -f "$CONF" ] && ! grep -q '^CLUSTER_PURPOSE=' "$CONF"; then
+  printf 'CLUSTER_PURPOSE=%q\n' "$CLUSTER_PURPOSE" >> "$CONF"
+fi
 atlas_deploy_guard_existing_cluster
 atlas_deploy_persist_name
 atlas_printf phase02.progress.check_nodes "${#NODES[@]}"; printf '\n'
@@ -583,7 +592,7 @@ if [ ! -f "$CONF" ]; then
   install -d -m 700 "$STATE"
   {
     printf 'NODES=('; for n in "${NODES[@]}"; do printf '%q ' "$n"; done; printf ')\n'
-    for v in CLUSTER_NAME SSH_USER PROFILE VIP APP_INGRESS_VIP LB_STATS_ALLOWED_CIDR LOCAL_REGISTRY_HOST API_PORT VRRP_ID POD_CIDR SVC_CIDR AUTH_PASS; do printf '%s=%q\n' "$v" "${!v}"; done
+    for v in CLUSTER_NAME SSH_USER PROFILE CLUSTER_PURPOSE VIP APP_INGRESS_VIP LB_STATS_ALLOWED_CIDR LOCAL_REGISTRY_HOST API_PORT VRRP_ID POD_CIDR SVC_CIDR AUTH_PASS; do printf '%s=%q\n' "$v" "${!v}"; done
     for n in "${NODES[@]}"; do printf 'IP[%q]=%q\n' "$n" "${IP[$n]}"; done
     for n in "${NODES[@]}"; do
       printf 'NODE_IFACE[%q]=%q\nNODE_HOME[%q]=%q\nPUB[%q]=%q\n' \
@@ -685,7 +694,7 @@ for i in "${!LBS[@]}"; do
   n="${LBS[$i]}"
   mode=--slave; [ "$n" = lb1 ] && mode=--master
   priority=$((250 - i))
-  cmd="env VIP=$(q "$VIP") APP_INGRESS_VIP=$(q "$APP_INGRESS_VIP") LB_STATS_ALLOWED_CIDR=$(q "$LB_STATS_ALLOWED_CIDR") API_PORT=$(q "$API_PORT") IFACE=$(q "${NODE_IFACE[$n]}") CP_BACKENDS=$(q "$CP_BACKENDS") VRRP_ID=$(q "$VRRP_ID") LB_PRIORITY=$(q "$priority") AUTH_PASS=$(q "$AUTH_PASS") bash $LIB/setup-lb.sh $(q "${IP[$n]}") $mode"
+  cmd="env LB_NAME=$(q "$n") VIP=$(q "$VIP") APP_INGRESS_VIP=$(q "$APP_INGRESS_VIP") LB_STATS_ALLOWED_CIDR=$(q "$LB_STATS_ALLOWED_CIDR") API_PORT=$(q "$API_PORT") IFACE=$(q "${NODE_IFACE[$n]}") CP_BACKENDS=$(q "$CP_BACKENDS") VRRP_ID=$(q "$VRRP_ID") LB_PRIORITY=$(q "$priority") AUTH_PASS=$(q "$AUTH_PASS") bash $LIB/setup-lb.sh $(q "${IP[$n]}") $mode"
   run "$n" "$cmd"
 done
 wait_lb_vip_owner "$VIP"

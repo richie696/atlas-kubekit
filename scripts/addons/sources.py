@@ -62,6 +62,23 @@ def yaml_module():
     return yaml
 
 
+def manifest_loader(yaml):
+    """Load Helm manifests while treating the YAML 1.1 `=` value as text.
+
+    Some Prometheus CRD schemas contain an enum value consisting only of `=`.
+    PyYAML resolves that scalar to the legacy `tag:yaml.org,2002:value` tag but
+    SafeLoader has no constructor for it. Helm accepts the document; preserve
+    the scalar as a string so image rewriting can safely round-trip the chart.
+    """
+    class HelmManifestLoader(yaml.SafeLoader):
+        pass
+
+    HelmManifestLoader.add_constructor(
+        "tag:yaml.org,2002:value", yaml.constructor.SafeConstructor.construct_yaml_str
+    )
+    return HelmManifestLoader
+
+
 def https_url(value):
     url = urllib.parse.urlsplit(value)
     if (url.scheme != "https" or not url.hostname or url.username or url.password
@@ -132,6 +149,10 @@ def registry_ref(ref, config):
     if registry == "docker.io" and "/" not in path:
         path = "library/" + path
     if registry not in PUBLIC_REGISTRIES:
+        return ref
+    # DaoCloud currently rejects some GHCR packages (HTTP 403). Keep those
+    # references on GHCR so a selected file/chart mirror does not break installs.
+    if registry == "ghcr.io" and config["profile"] in {"daocloud", "1panel"}:
         return ref
     if config["profile"] == "google":
         return "mirror.gcr.io/" + path if registry == "docker.io" else ref
@@ -771,10 +792,11 @@ def origin_key(origin):
 
 def render(config, language):
     yaml = yaml_module()
+    loader = manifest_loader(yaml)
     # Helm charts may emit empty YAML documents between `---` separators.
     # PyYAML parses those as None; serializing them again writes `null` as a
     # document, which Helm's install/upgrade manifest decoder rejects.
-    docs = [doc for doc in yaml.safe_load_all(sys.stdin) if doc is not None]
+    docs = [doc for doc in yaml.load_all(sys.stdin, Loader=loader) if doc is not None]
     changes = set()
     for doc in docs:
         if not isinstance(doc, dict):
@@ -790,7 +812,7 @@ def render(config, language):
             # Envoy's controller creates data-plane Pods later using this config.
             for key, content in doc.get("data", {}).items():
                 if key == "envoy-gateway.yaml" and isinstance(content, str):
-                    nested = yaml.safe_load(content)
+                    nested = yaml.load(content, Loader=loader)
                     rewrite_spec(nested, config, changes)
                     doc["data"][key] = yaml.safe_dump(nested, sort_keys=False)
     label = tr("phase03.source.label.image_source")

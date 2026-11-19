@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "risks": [],
+  "expectedTargets": [
+    {
+      "scrapePool": "serviceMonitor/monitoring/node-exporter/0",
+      "job": "node-exporter",
+      "instance": "cp1.example.internal:9100"
+    },
+    {
+      "scrapePool": "serviceMonitor/monitoring/node-exporter/0",
+      "job": "node-exporter",
+      "instance": "worker1.example.internal:9100"
+    }
+  ],
+  "riskTargets": [
+    {
+      "riskId": "R-NODE-03",
+      "scrapePool": "serviceMonitor/monitoring/node-exporter/0",
+      "job": "node-exporter",
+      "instance": "cp1.example.internal:9100"
+    },
+    {
+      "riskId": "R-NODE-03",
+      "scrapePool": "serviceMonitor/monitoring/node-exporter/0",
+      "job": "node-exporter",
+      "instance": "worker1.example.internal:9100"
+    }
+  ],
+  "riskMetrics": [
+    {
+      "riskId": "R-NODE-03",
+      "scrapePool": "serviceMonitor/monitoring/node-exporter/0",
+      "job": "node-exporter",
+      "instance": "cp1.example.internal:9100",
+      "metric": "node_memory_MemAvailable_bytes"
+    },
+    {
+      "riskId": "R-NODE-03",
+      "scrapePool": "serviceMonitor/monitoring/node-exporter/0",
+      "job": "node-exporter",
+      "instance": "worker1.example.internal:9100",
+      "metric": "node_memory_MemAvailable_bytes"
+    }
+  ],
+  "observerMappings": [
+    {
+      "riskId": "R-EDGE-01",
+      "observerName": "api-vip"
+    }
+  ]
+}

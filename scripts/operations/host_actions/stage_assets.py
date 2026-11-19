@@ -9,6 +9,8 @@ from ..models import OperationError
 
 ASSETS = (
     "stages/setup-k8s-node.sh",
+    "stages/node-systemd-metrics.py",
+    "stages/lb-vip-metrics.py",
     "stages/configure-registry-mirror.sh",
     "stages/storage.py",
     "stages/containerd.py",

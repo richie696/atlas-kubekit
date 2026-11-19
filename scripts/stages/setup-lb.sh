@@ -22,6 +22,7 @@ set -euo pipefail
 STAGE_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib"
 [ -r "$STAGE_RUNTIME_DIR/stage-runtime.sh" ] || STAGE_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/lib"
 [ -r "$STAGE_RUNTIME_DIR/stage-runtime.sh" ] || { printf '[ERROR] Missing shared stage runtime; copy the complete package\n' >&2; exit 1; }
+DEPLOY_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/stage-runtime.sh
 source "$STAGE_RUNTIME_DIR/stage-runtime.sh"
 atlas_stage_packages_init "$STAGE_RUNTIME_DIR" || exit 1
@@ -37,17 +38,21 @@ pass() { printf '  \033[32mOK\033[0m %s\n' "$*"; }
 # Package installation and the health-check permissions are retained on failure.
 # Managed configuration and service state are restored if applying it fails.
 TMP_CFG="" TMP_KEEP="" TMP_STATE="" TMP_CHECK="" TMP_SYSCTL=""
+TMP_APT_FALLBACK_CONF="" TMP_APT_FALLBACK_SOURCES="" TMP_VIP_UNIT="" TMP_VIP_ENV=""
 ROLLBACK_REQUIRED=0
 BACKUP_DIR=""
 NONLOCAL_CONF=/etc/sysctl.d/99-atlas-kubekit-lb.conf
+VIP_METRICS_SCRIPT=/usr/local/libexec/atlas-kubekit/lb-vip-metrics.py
+VIP_METRICS_ENV=/etc/default/atlas-lb-vip-metrics
+VIP_METRICS_UNIT=/etc/systemd/system/atlas-lb-vip-metrics.service
 NONLOCAL_BIND_BEFORE=""
 NONLOCAL_BIND_TOUCHED=0
-CONFIG_PATHS=(/etc/haproxy/haproxy.cfg /etc/keepalived/keepalived.conf /etc/atlas-kubekit/lb-manager.json "$NONLOCAL_CONF")
-SERVICES=(haproxy keepalived)
-SERVICE_ACTIVE=(0 0)
-SERVICE_TOUCHED=(0 0)
-SERVICE_ENABLED=(0 0)
-SERVICE_ENABLE_TOUCHED=(0 0)
+CONFIG_PATHS=(/etc/haproxy/haproxy.cfg /etc/keepalived/keepalived.conf /etc/atlas-kubekit/lb-manager.json "$NONLOCAL_CONF" "$VIP_METRICS_SCRIPT" "$VIP_METRICS_ENV" "$VIP_METRICS_UNIT")
+SERVICES=(haproxy keepalived atlas-lb-vip-metrics)
+SERVICE_ACTIVE=(0 0 0)
+SERVICE_TOUCHED=(0 0 0)
+SERVICE_ENABLED=(0 0 0)
+SERVICE_ENABLE_TOUCHED=(0 0 0)
 cleanup() {
   local status=$? i path
   trap - EXIT
@@ -63,6 +68,7 @@ cleanup() {
         rm -f "$path" || warn "Could not remove the newly created file $path"
       fi
     done
+    systemctl daemon-reload || warn 'Could not reload restored systemd units'
     for i in "${!SERVICES[@]}"; do
       [ "${SERVICE_TOUCHED[$i]}" -eq 1 ] || continue
       if [ "${SERVICE_ACTIVE[$i]}" -eq 1 ]; then
@@ -82,9 +88,10 @@ cleanup() {
     done
     [ "$status" -ne 0 ] || status=1
   fi
-  for path in "$TMP_CFG" "$TMP_KEEP" "$TMP_STATE" "$TMP_CHECK" "$TMP_SYSCTL"; do
+  for path in "$TMP_CFG" "$TMP_KEEP" "$TMP_STATE" "$TMP_CHECK" "$TMP_SYSCTL" "$TMP_APT_FALLBACK_CONF" "$TMP_VIP_UNIT" "$TMP_VIP_ENV"; do
     [ -z "$path" ] || rm -f "$path" || true
   done
+  [ -z "$TMP_APT_FALLBACK_SOURCES" ] || rm -rf "$TMP_APT_FALLBACK_SOURCES" || true
   exit "$status"
 }
 trap cleanup EXIT
@@ -115,6 +122,7 @@ CP_BACKENDS="${CP_BACKENDS:-cp1=$CP1 cp2=$CP2 cp3=$CP3}"
 APP_INGRESS_VIP="${APP_INGRESS_VIP:-}"
 LB_STATS_ALLOWED_CIDR="${LB_STATS_ALLOWED_CIDR:-}"
 LB_PRIORITY="${LB_PRIORITY:-}"
+LB_NAME="${LB_NAME:-$(hostname -s)}"
 MODE="master"
 CHECK_ONLY=0
 
@@ -133,6 +141,7 @@ if [ -z "$SELF_IP" ]; then
   SELF_IP="$(ip -o -4 addr show "$IFACE" | awk '{print $4}' | cut -d/ -f1 | head -1)"
 fi
 [ -n "$SELF_IP" ] || die "Cannot detect local IP; run: sudo bash $0 <local-IP>"
+[[ "$LB_NAME" =~ ^lb[1-9][0-9]*$ ]] || die 'LB_NAME must use the lbN node name format'
 valid_ipv4 "$SELF_IP" && valid_ipv4 "$VIP" || die 'Local IP and VIP must be valid IPv4 addresses'
 [[ "$IFACE" =~ ^[a-zA-Z0-9_.:-]+$ ]] || die 'Invalid network interface'
 ip -o -4 addr show "$IFACE" | grep -Fq " $SELF_IP/" || die 'Local IP is not assigned to the selected network interface'
@@ -200,8 +209,28 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
   command -v keepalived >/dev/null || die 'Keepalived must already be installed for --check-only'
   command -v python3 >/dev/null || die 'Python 3 must already be installed for --check-only'
 else
-  atlas_apt update -qq
-  atlas_apt install -y -qq haproxy keepalived psmisc python3 age >/dev/null
+  if ! atlas_apt update -qq || ! atlas_apt install -y -qq haproxy keepalived psmisc python3 age >/dev/null; then
+    warn 'The configured Ubuntu package source failed; retrying with the Tsinghua Ubuntu mirror in a temporary APT source configuration'
+    TMP_APT_FALLBACK_SOURCES="$(mktemp -d)"
+    TMP_APT_FALLBACK_CONF="$(mktemp)"
+    if [ -f /etc/apt/sources.list ]; then
+      cp /etc/apt/sources.list "$TMP_APT_FALLBACK_SOURCES/ubuntu.list"
+    fi
+    for source_file in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+      [ -f "$source_file" ] || continue
+      source_name="$(basename "$source_file")"
+      sed 's#http://cn\.archive\.ubuntu\.com/ubuntu/#https://mirrors.tuna.tsinghua.edu.cn/ubuntu/#g; s#https://cn\.archive\.ubuntu\.com/ubuntu/#https://mirrors.tuna.tsinghua.edu.cn/ubuntu/#g' \
+        "$source_file" > "$TMP_APT_FALLBACK_SOURCES/$source_name"
+    done
+    cat > "$TMP_APT_FALLBACK_CONF" <<EOF
+Dir::Etc::sourcelist "/etc/apt/sources.list";
+Dir::Etc::sourceparts "$TMP_APT_FALLBACK_SOURCES";
+EOF
+    APT_CONFIG="$TMP_APT_FALLBACK_CONF" atlas_apt update -qq \
+      || die 'APT update failed with both configured and fallback Ubuntu package sources'
+    APT_CONFIG="$TMP_APT_FALLBACK_CONF" atlas_apt install -y -qq haproxy keepalived psmisc python3 age >/dev/null \
+      || die 'Could not install HAProxy, Keepalived, psmisc, Python 3, and age from configured or fallback sources'
+  fi
 fi
 if [ "$CHECK_ONLY" -eq 1 ]; then
   [ "$(sysctl -n net.ipv4.ip_nonlocal_bind)" = 1 ] \
@@ -254,6 +283,21 @@ $(if [ -n "$LB_STATS_ALLOWED_CIDR" ]; then printf '    bind *:7000\n    acl stat
     stats enable
     stats uri /
     stats refresh 10s
+
+frontend prometheus-metrics
+$(if [ -n "$LB_STATS_ALLOWED_CIDR" ]; then printf '    bind *:8405\n    acl metrics_source_allowed src %s\n    http-request deny if !metrics_source_allowed\n' "$LB_STATS_ALLOWED_CIDR"; else printf '    bind 127.0.0.1:8405\n'; fi)
+    mode http
+    option socket-stats
+    http-request use-service prometheus-exporter if { path /metrics }
+    use_backend atlas-vip-metrics if { path /vip-metrics }
+    no log
+
+backend atlas-vip-metrics
+    mode http
+    http-request set-path /metrics
+    option httpchk GET /metrics
+    http-check expect status 200
+    server local-vip-metrics 127.0.0.1:8406 check inter 5s fall 2 rise 2
 EOF
 
 # Preserve routes owned by the post-deployment LB manager. Re-running cluster
@@ -291,6 +335,8 @@ if [ ! -x /usr/bin/killall ]; then
   die "Required HAProxy health-check dependency /usr/bin/killall is unavailable after installing psmisc; install psmisc and retry"
 fi
 CHECK_HAPROXY_SCRIPT=/usr/local/libexec/atlas-kubekit/check-haproxy
+VIP_METRICS_SOURCE="$DEPLOY_LIB/lb-vip-metrics.py"
+[ -r "$VIP_METRICS_SOURCE" ] || die 'The LB VIP metrics collector is missing from the deployment package'
 if [ "$CHECK_ONLY" -eq 1 ]; then
   [ -x "$CHECK_HAPROXY_SCRIPT" ] || die "Missing installed Keepalived health-check script: $CHECK_HAPROXY_SCRIPT"
 else
@@ -440,25 +486,70 @@ for i in "${!SERVICES[@]}"; do
   if systemctl is-enabled --quiet "${SERVICES[$i]}"; then SERVICE_ENABLED[$i]=1; fi
   printf '%s active=%s enabled=%s\n' "${SERVICES[$i]}" "${SERVICE_ACTIVE[$i]}" "${SERVICE_ENABLED[$i]}" >> "$BACKUP_DIR/services"
 done
+TMP_VIP_UNIT="$(mktemp)"
+cat > "$TMP_VIP_UNIT" <<'EOF'
+# Managed by Atlas KubeKit
+[Unit]
+Description=Atlas Keepalived VIP metrics
+After=network-online.target keepalived.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nobody
+Group=nogroup
+EnvironmentFile=/etc/default/atlas-lb-vip-metrics
+ExecStart=/usr/bin/python3 /usr/local/libexec/atlas-kubekit/lb-vip-metrics.py --serve
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+TMP_VIP_ENV="$(mktemp)"
+VIP_LIST="$VIP"
+if [ -n "$APP_INGRESS_VIP" ] && [ "$APP_INGRESS_VIP" != "$VIP" ]; then
+  VIP_LIST="$VIP_LIST,$APP_INGRESS_VIP"
+fi
+printf '# Managed by Atlas KubeKit\nATLAS_LB_NAME=%s\nATLAS_LB_VIPS=%s\nATLAS_LB_INTERFACE=%s\n' "$LB_NAME" "$VIP_LIST" "$IFACE" > "$TMP_VIP_ENV"
 ROLLBACK_REQUIRED=1
-for i in "${!SERVICES[@]}"; do
-  SERVICE_ENABLE_TOUCHED[$i]=1
-  systemctl enable "${SERVICES[$i]}" >/dev/null || die "Cannot enable ${SERVICES[$i]} at boot"
-  systemctl is-enabled --quiet "${SERVICES[$i]}" || die "${SERVICES[$i]} is not enabled at boot"
-done
-install -d -m 0755 /run/haproxy /etc/atlas-kubekit /etc/sysctl.d
-HAPROXY_CHANGED=0 KEEPALIVED_CHANGED=0
+install -d -m 0755 /run/haproxy /etc/atlas-kubekit /etc/sysctl.d /etc/default /etc/systemd/system /usr/local/libexec/atlas-kubekit
+HAPROXY_CHANGED=0 KEEPALIVED_CHANGED=0 VIP_METRICS_CHANGED=0
 if ! cmp -s "$TMP_CFG" /etc/haproxy/haproxy.cfg; then
   HAPROXY_CHANGED=1
 fi
 if ! cmp -s "$TMP_KEEP" /etc/keepalived/keepalived.conf; then
   KEEPALIVED_CHANGED=1
 fi
+if ! cmp -s "$VIP_METRICS_SOURCE" "$VIP_METRICS_SCRIPT" \
+  || ! cmp -s "$TMP_VIP_ENV" "$VIP_METRICS_ENV" \
+  || ! cmp -s "$TMP_VIP_UNIT" "$VIP_METRICS_UNIT"; then
+  VIP_METRICS_CHANGED=1
+fi
 # Reinstall matching bytes too, so reruns also correct ownership and modes.
 install -o root -g root -m 0644 "$TMP_CFG" /etc/haproxy/haproxy.cfg
 install -o root -g root -m 0640 "$TMP_KEEP" /etc/keepalived/keepalived.conf
 install -o root -g root -m 0600 "$TMP_STATE" /etc/atlas-kubekit/lb-manager.json
 install -o root -g root -m 0644 "$TMP_SYSCTL" "$NONLOCAL_CONF"
+install -o root -g root -m 0755 "$VIP_METRICS_SOURCE" "$VIP_METRICS_SCRIPT"
+install -o root -g root -m 0640 "$TMP_VIP_ENV" "$VIP_METRICS_ENV"
+install -o root -g root -m 0644 "$TMP_VIP_UNIT" "$VIP_METRICS_UNIT"
+systemctl daemon-reload || die 'Cannot reload systemd after installing the VIP metrics service'
+for i in "${!SERVICES[@]}"; do
+  SERVICE_ENABLE_TOUCHED[$i]=1
+  systemctl enable "${SERVICES[$i]}" >/dev/null || die "Cannot enable ${SERVICES[$i]} at boot"
+  systemctl is-enabled --quiet "${SERVICES[$i]}" || die "${SERVICES[$i]} is not enabled at boot"
+done
 if [ "$NONLOCAL_BIND_BEFORE" != 1 ]; then
   NONLOCAL_BIND_TOUCHED=1
   sysctl -w net.ipv4.ip_nonlocal_bind=1 >/dev/null || die 'Cannot enable VIP-specific HAProxy listeners'
@@ -476,8 +567,14 @@ if [ "$KEEPALIVED_CHANGED" -eq 1 ] || [ "${SERVICE_ACTIVE[1]}" -eq 0 ]; then
   SERVICE_TOUCHED[1]=1
   systemctl restart keepalived || die 'Keepalived restart failed; restoring the previous configuration'
 fi
+if [ "$VIP_METRICS_CHANGED" -eq 1 ] || [ "${SERVICE_ACTIVE[2]}" -eq 0 ]; then
+  SERVICE_TOUCHED[2]=1
+  systemctl restart atlas-lb-vip-metrics || die 'LB VIP metrics service failed to start; restoring the previous configuration'
+fi
+systemctl is-active --quiet atlas-lb-vip-metrics || die 'LB VIP metrics service is not active'
 sleep 2
-systemctl is-active --quiet haproxy && systemctl is-active --quiet keepalived || die 'LB services did not remain active'
+systemctl is-active --quiet haproxy && systemctl is-active --quiet keepalived && \
+  systemctl is-active --quiet atlas-lb-vip-metrics || die 'LB services did not remain active'
 ss -H -lnt "sport = :${API_PORT}" | grep -q . || die 'HAProxy API port is not listening'
 ROLLBACK_REQUIRED=0
 pass "HAProxy and Keepalived are running and enabled at boot (role=$MODE)"

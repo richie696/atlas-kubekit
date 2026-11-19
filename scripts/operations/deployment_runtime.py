@@ -23,6 +23,7 @@ FIELDS = {
     "CLUSTER_NAME",
     "SSH_USER",
     "PROFILE",
+    "CLUSTER_PURPOSE",
     "VIP",
     "APP_INGRESS_VIP",
     "API_PORT",
@@ -62,6 +63,7 @@ def read_rows(stream):
     cluster = dict(
         name=values["CLUSTER_NAME"],
         profile=values["PROFILE"],
+        purpose=values["CLUSTER_PURPOSE"],
         apiVIP=values["VIP"],
         apiPort=int(values["API_PORT"]),
         appVIP=values["APP_INGRESS_VIP"],

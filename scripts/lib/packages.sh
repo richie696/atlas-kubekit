@@ -28,9 +28,17 @@ PY
 }
 
 atlas_apt() {
-  local timeout="${ATLAS_PACKAGE_LOCK_TIMEOUT:-300}" message status
+  local timeout="${ATLAS_PACKAGE_LOCK_TIMEOUT:-300}" message status command_timeout="${ATLAS_APT_COMMAND_TIMEOUT:-}"
+  local -a command_timeout_prefix=()
   if ! [[ "$timeout" =~ ^[0-9]+$ ]] || [ "$timeout" -lt 1 ] || [ "$timeout" -gt 3600 ]; then
     atlas_t common.package.invalid_timeout >&2; printf '\n' >&2; return 2
+  fi
+  if [ -n "$command_timeout" ]; then
+    if ! [[ "$command_timeout" =~ ^[1-9][0-9]*$ ]] || [ "$command_timeout" -gt 3600 ]; then
+      atlas_t common.package.invalid_timeout >&2; printf '\n' >&2; return 2
+    fi
+    command -v timeout >/dev/null 2>&1 || return 127
+    command_timeout_prefix=(timeout --foreground --kill-after=10 "$command_timeout")
   fi
   message="$(atlas_t common.package.wait_lock)"
   if atlas_wait_locks "$timeout" "$message" \
@@ -38,9 +46,9 @@ atlas_apt() {
     /var/lib/apt/lists/lock /var/cache/apt/archives/lock; then :
   else status=$?; atlas_t common.package.lock_timeout >&2; printf '\n' >&2; return "$status"; fi
   if [ -f /var/lib/k8s-deploy/materials.json ]; then
-    python3 /usr/local/lib/k8s-deploy/scripts/operations/materials/runtime.py apt \
+    DEBIAN_FRONTEND=noninteractive "${command_timeout_prefix[@]}" python3 /usr/local/lib/k8s-deploy/scripts/operations/materials/runtime.py apt \
       -o "DPkg::Lock::Timeout=$timeout" -o Acquire::Retries=0 "$@"
   else
-    apt-get -o "DPkg::Lock::Timeout=$timeout" -o Acquire::Retries=3 "$@"
+    DEBIAN_FRONTEND=noninteractive "${command_timeout_prefix[@]}" apt-get -o "DPkg::Lock::Timeout=$timeout" -o Acquire::Retries=3 "$@"
   fi
 }

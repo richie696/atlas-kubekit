@@ -9,6 +9,26 @@ from tests.shell import BASH
 
 
 class PackageLocksTests(unittest.TestCase):
+    def test_command_timeout_keeps_terminal_foreground_and_disables_debconf_prompts(self):
+        with tempfile.TemporaryDirectory(dir='/private/tmp' if Path('/private/tmp').exists() else None) as directory:
+            root=Path(directory)
+            fake_bin=root/'bin';fake_bin.mkdir()
+            capture=root/'apt-arguments'
+            timeout=fake_bin/'timeout'
+            timeout.write_text('#!/bin/bash\nprintf "frontend=%s\\n" "${DEBIAN_FRONTEND:-}" > "$CAPTURE"\nprintf "arg=%s\\n" "$@" >> "$CAPTURE"\n')
+            timeout.chmod(0o755)
+            script='''
+source "$1"
+atlas_t() { printf '%s' "$1"; }
+atlas_wait_locks() { return 0; }
+PATH="$2:$PATH" CAPTURE="$3" ATLAS_APT_COMMAND_TIMEOUT=90 atlas_apt install -y cri-tools
+'''
+            result=subprocess.run([BASH,'-c',script,'test',str(ROOT/'scripts/lib/packages.sh'),str(fake_bin),str(capture)],capture_output=True,text=True,timeout=5)
+            self.assertEqual(result.returncode,0,result.stderr)
+            arguments=capture.read_text().splitlines()
+            self.assertEqual(arguments[:5],['frontend=noninteractive','arg=--foreground','arg=--kill-after=10','arg=90','arg=apt-get'])
+            self.assertIn('arg=cri-tools',arguments)
+
     def test_active_lock_times_out_and_released_lock_succeeds(self):
         with tempfile.TemporaryDirectory(dir='/private/tmp' if Path('/private/tmp').exists() else None) as directory:
             file=Path(directory)/'lock'

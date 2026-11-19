@@ -7,6 +7,16 @@ import re
 
 from ..models import OperationError, fingerprint
 
+MONITORING_RULE_CAPABILITIES = frozenset((
+    "monitoring-node-rules", "monitoring-scrape-rules", "monitoring-workload-rules",
+    "monitoring-storage-rules", "monitoring-statefulset-rules", "monitoring-daemonset-rules", "monitoring-etcd-rules",
+    "monitoring-longhorn-rules", "monitoring-control-plane-rules", "monitoring-dns-rules", "monitoring-lb-rules",
+    "monitoring-longhorn-disk-rules",
+    "monitoring-workload-health-rules",
+    "monitoring-certificate-rules",
+    "monitoring-node-network-rules",
+))
+
 CAPABILITIES = frozenset(
     (
         "lb-stats",
@@ -20,8 +30,9 @@ CAPABILITIES = frozenset(
         "component-upgrade",
         "protection-register",
         "cluster-deploy",
+        "monitoring-systemd-remove",
     )
-)
+) | MONITORING_RULE_CAPABILITIES | frozenset(("monitoring-longhorn-collection", "monitoring-lb-collection", "monitoring-lb", "monitoring-systemd-collection", "monitoring-email", "monitoring-email-diagnostics", "monitoring-robot", "monitoring-relay-metrics", "monitoring-cilium-collection", "monitoring-network-probes", "monitoring-silence", "monitoring-inhibition", "monitoring-resource-remove"))
 FIELDS = {
     "schemaVersion",
     "id",

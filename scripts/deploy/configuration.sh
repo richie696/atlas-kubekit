@@ -26,7 +26,7 @@ atlas_deploy_config_load() {
           CONFIG_NODES+=("$value"); CONFIG_IP[$value]="$address"; CONFIG_IFACE[$value]="$interface"
           CONFIG_DISK[$value]="$disk"; CONFIG_PIN[$value]="$pin"
           ;;
-        CLUSTER_NAME|SSH_USER|PROFILE|VIP|APP_INGRESS_VIP|API_PORT|VRRP_ID|POD_CIDR|SVC_CIDR|LB_STATS_ALLOWED_CIDR|LOCAL_REGISTRY_HOST)
+        CLUSTER_NAME|SSH_USER|PROFILE|CLUSTER_PURPOSE|VIP|APP_INGRESS_VIP|API_PORT|VRRP_ID|POD_CIDR|SVC_CIDR|LB_STATS_ALLOWED_CIDR|LOCAL_REGISTRY_HOST)
           CONFIG_VALUES[$field]="$value"
           ;;
         *) die "$(atlas_t phase02.config.invalid)" ;;
@@ -38,7 +38,7 @@ atlas_deploy_config_load() {
 atlas_deploy_validate_plan() {
   [ "${#NODES[@]}" -eq "${#CONFIG_NODES[@]}" ] || die "$(atlas_t phase02.config.conflict)"
   local key n
-  for key in CLUSTER_NAME SSH_USER PROFILE VIP APP_INGRESS_VIP API_PORT VRRP_ID POD_CIDR SVC_CIDR LB_STATS_ALLOWED_CIDR LOCAL_REGISTRY_HOST; do
+  for key in CLUSTER_NAME SSH_USER PROFILE CLUSTER_PURPOSE VIP APP_INGRESS_VIP API_PORT VRRP_ID POD_CIDR SVC_CIDR LB_STATS_ALLOWED_CIDR LOCAL_REGISTRY_HOST; do
     [ "${!key}" = "${CONFIG_VALUES[$key]}" ] || die "$(atlas_t phase02.config.conflict)"
   done
   for n in "${CONFIG_NODES[@]}"; do

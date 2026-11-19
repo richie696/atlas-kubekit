@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from scripts.operations.host_actions import common,stats
+from scripts.operations.host_actions import common,stats,lb_vip_metrics
 from scripts.operations.adapters.host import bundle
 from scripts.operations.models import OperationError
 
@@ -41,11 +41,20 @@ class StatsTests(unittest.TestCase):
         candidate=stats.render(CONFIG,'192.0.2.0/24')
         self.assertEqual(candidate.split('# BEGIN ATLAS')[1],CONFIG.split('# BEGIN ATLAS')[1])
         self.assertIn('http-request deny if !stats_source_allowed',candidate)
+        self.assertIn('frontend prometheus-metrics', candidate)
+        self.assertIn('bind *:8405', candidate)
+        self.assertIn('acl metrics_source_allowed src 192.0.2.0/24', candidate)
+        self.assertIn('http-request use-service prometheus-exporter if { path /metrics }', candidate)
+        self.assertIn('use_backend atlas-vip-metrics if { path /vip-metrics }', candidate)
+        self.assertIn('server local-vip-metrics 127.0.0.1:8406 check inter 5s fall 2 rise 2', candidate)
+        self.assertIn('http-request set-path /metrics', candidate)
         self.assertEqual(stats.render(candidate,'192.0.2.0/24'),candidate)
         self.assertIn('bind 127.0.0.1:7000',stats.render(candidate,''))
+        self.assertIn('bind 127.0.0.1:8405',stats.render(candidate,''))
 
     def test_foreign_layout_and_default_route_are_refused(self):
-        for value in (CONFIG+CONFIG,CONFIG.replace('stats enable','http-request allow'),CONFIG.replace('stats uri /','stats uri /foreign')):
+        for value in (CONFIG+CONFIG,CONFIG.replace('stats enable','http-request allow'),CONFIG.replace('stats uri /','stats uri /foreign'),
+                      CONFIG.replace('frontend stats', 'frontend stats\n    bind *:8405')):
             with self.assertRaises(OperationError):stats.render(value,'')
         with self.assertRaises(OperationError):stats.render(CONFIG,'0.0.0.0/0')
 
@@ -80,7 +89,59 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('scripts/operations/host_actions/entry.py',archive.namelist())
         self.assertTrue(all(name.startswith('scripts/') and name.endswith(('.py', '.sh', '.json')) for name in archive.namelist()))
         self.assertIn('scripts/operations/assets/stages/setup-k8s-node.sh', archive.namelist())
+        self.assertIn('scripts/operations/host_actions/lb_vip_metrics.py', archive.namelist())
+        self.assertIn('scripts/operations/assets/stages/lb-vip-metrics.py', archive.namelist())
         self.assertFalse(any('kubeconfig' in name or '.ssh' in name for name in archive.namelist()))
+
+
+class LbVipMetricsHostActionTest(unittest.TestCase):
+    def test_configuration_is_bounded_and_unit_is_loopback_hardened(self):
+        value = lb_vip_metrics._validated({"node": "lb1", "interface": "enp6s18",
+                                           "vips": ["10.20.1.31"]})
+        desired = lb_vip_metrics._desired(value, b"# Managed by Atlas KubeKit\n# Expose local Keepalived state")
+        self.assertEqual(set(desired), {lb_vip_metrics.SCRIPT, lb_vip_metrics.ENV, lb_vip_metrics.UNIT})
+        self.assertIn(b"ATLAS_LB_VIPS=10.20.1.31", desired[lb_vip_metrics.ENV])
+        self.assertIn(lb_vip_metrics.MARKER.encode(), desired[lb_vip_metrics.ENV])
+        self.assertIn(lb_vip_metrics.MARKER.encode(), desired[lb_vip_metrics.UNIT])
+        self.assertIn(lb_vip_metrics.MARKER.encode(), desired[lb_vip_metrics.SCRIPT])
+        self.assertIn(b"User=nobody", desired[lb_vip_metrics.UNIT])
+        self.assertIn(b"RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK", desired[lb_vip_metrics.UNIT])
+        for invalid in (
+            {"node": "lb0", "interface": "enp6s18", "vips": ["10.20.1.31"]},
+            {"node": "lb1", "interface": "enp6s18;id", "vips": ["10.20.1.31"]},
+            {"node": "lb1", "interface": "enp6s18", "vips": ["0.0.0.0"]},
+        ):
+            with self.assertRaises(OperationError):
+                lb_vip_metrics._validated(invalid)
+
+    def test_known_setup_lb_layout_without_markers_is_supported_for_safe_migration(self):
+        legacy_script = (Path(__file__).resolve().parents[1] / "scripts/stages/lb-vip-metrics.py").read_bytes()
+        legacy_script = legacy_script.replace(
+            b"# Managed by Atlas KubeKit: LB VIP metrics collector.\n", b"", 1
+        )
+        legacy_env = ("ATLAS_LB_NAME=lb1\nATLAS_LB_VIPS=10.20.1.39\n"
+                      "ATLAS_LB_INTERFACE=enp6s18\n").encode()
+        legacy = {lb_vip_metrics.SCRIPT: legacy_script,
+                  lb_vip_metrics.ENV: legacy_env,
+                  lb_vip_metrics.UNIT: lb_vip_metrics.LEGACY_UNIT}
+        with patch.object(lb_vip_metrics.subprocess, "run", return_value=unittest.mock.Mock(returncode=0)):
+            state = lb_vip_metrics._state(legacy)
+        self.assertTrue(state["installed"])
+        self.assertEqual(state["digest"], lb_vip_metrics.hashlib.sha256(
+            b"\0".join(legacy[path] for path in (lb_vip_metrics.SCRIPT,
+                                                   lb_vip_metrics.ENV,
+                                                   lb_vip_metrics.UNIT))).hexdigest())
+
+        foreign = dict(legacy)
+        foreign[lb_vip_metrics.UNIT] = b"[Service]\nExecStart=/bin/false\n"
+        with patch.object(lb_vip_metrics.subprocess, "run", return_value=unittest.mock.Mock(returncode=0)):
+            with self.assertRaises(OperationError):
+                lb_vip_metrics._state(foreign)
+
+    def test_entry_exposes_observe_and_apply_as_fixed_actions(self):
+        from scripts.operations.host_actions.entry import ACTIONS
+        self.assertIn("lb-vip-metrics-observe", ACTIONS)
+        self.assertIn("lb-vip-metrics-apply", ACTIONS)
 
 
 if __name__=='__main__':unittest.main()

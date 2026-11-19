@@ -38,7 +38,7 @@ atlas_deploy_copy_operations_runtime() {
 
 atlas_deploy_public_rows() {
   local key n
-  for key in CLUSTER_NAME SSH_USER PROFILE VIP APP_INGRESS_VIP API_PORT VRRP_ID POD_CIDR SVC_CIDR LB_STATS_ALLOWED_CIDR LOCAL_REGISTRY_HOST; do
+  for key in CLUSTER_NAME SSH_USER PROFILE CLUSTER_PURPOSE VIP APP_INGRESS_VIP API_PORT VRRP_ID POD_CIDR SVC_CIDR LB_STATS_ALLOWED_CIDR LOCAL_REGISTRY_HOST; do
     printf '%s\t%s\n' "$key" "${!key}"
   done
   for n in "${NODES[@]}"; do

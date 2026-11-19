@@ -49,6 +49,8 @@ K8S_MINOR="${K8S_MINOR:-${K8S_VERSION%.*}}"
 K8S_DEB_VERSION="${K8S_DEB_VERSION:-${K8S_VERSION}-1.1}"
 CRI_TOOLS_DEB_VERSION="${CRI_TOOLS_DEB_VERSION:-${ATLAS_CRI_TOOLS_VERSION#v}-1.1}"
 K8S_PKG_CHANNEL="${K8S_PKG_CHANNEL:-stable}"
+K8S_APT_REPOSITORY="${K8S_APT_REPOSITORY:-https://pkgs.k8s.io/core:/${K8S_PKG_CHANNEL}:/v${K8S_MINOR}/deb/}"
+K8S_APT_FALLBACK_REPOSITORY="${K8S_APT_FALLBACK_REPOSITORY:-https://mirrors.aliyun.com/kubernetes-new/core/${K8S_PKG_CHANNEL}/v${K8S_MINOR}/deb/}"
 IFACE="${IFACE:-enp6s18}"               # 网卡名，各机一致
 GATEWAY="${GATEWAY:-10.20.1.1}"
 SUBNET="${SUBNET:-24}"
@@ -485,6 +487,9 @@ else
     [ -z "$pkg_version" ] || [ "$pkg_version" = "$K8S_DEB_VERSION" ] \
       || die "Installed Kubernetes package version $pkg_version differs from target $K8S_DEB_VERSION; upgrade manually"
   done
+  repo_file=/etc/apt/sources.list.d/kubernetes.list
+  primary_repo_line="deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] ${K8S_APT_REPOSITORY} /"
+  fallback_repo_line="deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] ${K8S_APT_FALLBACK_REPOSITORY} /"
   if [ "$KUBEADM_PKG" = "$K8S_DEB_VERSION" ] && [ "$KUBELET_PKG" = "$K8S_DEB_VERSION" ] && [ "$KUBECTL_PKG" = "$K8S_DEB_VERSION" ]; then
     skip "kubeadm, kubelet, and kubectl are ${K8S_DEB_VERSION}"
   else
@@ -494,30 +499,91 @@ else
     install -d -m 755 /etc/apt/keyrings
     if [ ! -s /etc/apt/keyrings/kubernetes-apt-keyring.gpg ]; then
       key_tmp="$(mktemp)"
-      curl -fsSL "https://pkgs.k8s.io/core:/${K8S_PKG_CHANNEL}:/v${K8S_MINOR}/deb/Release.key" \
-        | gpg --dearmor > "$key_tmp"
+      primary_key_url="https://pkgs.k8s.io/core:/${K8S_PKG_CHANNEL}:/v${K8S_MINOR}/deb/Release.key"
+      fallback_key_url="${K8S_APT_FALLBACK_REPOSITORY%/}/Release.key"
+      key_downloaded=0
+      for key_url in "$fallback_key_url" "$primary_key_url"; do
+        if curl --connect-timeout 5 --max-time 20 --retry 1 --retry-all-errors --retry-delay 1 \
+          -fsSL "$key_url" | gpg --dearmor > "$key_tmp"; then
+          key_downloaded=1
+          break
+        fi
+        : > "$key_tmp"
+      done
+      if [ "$key_downloaded" -ne 1 ]; then
+        rm -f "$key_tmp"
+        die "Could not download and validate the Kubernetes repository signing key from the configured mirror or the official source"
+      fi
       install -m 644 "$key_tmp" /etc/apt/keyrings/kubernetes-apt-keyring.gpg
       rm -f "$key_tmp"
     fi
-    repo_line="deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/${K8S_PKG_CHANNEL}:/v${K8S_MINOR}/deb/ /"
-    if [ "$(cat /etc/apt/sources.list.d/kubernetes.list 2>/dev/null || true)" != "$repo_line" ]; then
+    current_repo_line="$(cat "$repo_file" 2>/dev/null || true)"
+    # Keep a previously successful mirror across a resume rather than retrying
+    # a repository that already timed out on this node.
+    repo_line="$primary_repo_line"
+    [ "$current_repo_line" != "$fallback_repo_line" ] || repo_line="$fallback_repo_line"
+    if [ "$current_repo_line" != "$repo_line" ]; then
       printf '%s\n' "$repo_line" > /etc/apt/sources.list.d/kubernetes.list
     fi
     fi
-    atlas_apt update -qq || die "apt update failed"
+    if ! ATLAS_APT_COMMAND_TIMEOUT=90 atlas_apt update -qq; then
+      if [ "$repo_line" = "$primary_repo_line" ] && [ ! -f /var/lib/k8s-deploy/materials.json ]; then
+        warn "Official Kubernetes APT repository is unavailable; retrying with ${K8S_APT_FALLBACK_REPOSITORY}"
+        printf '%s\n' "$fallback_repo_line" > "$repo_file"
+        repo_line="$fallback_repo_line"
+        ATLAS_APT_COMMAND_TIMEOUT=90 atlas_apt update -qq \
+          || die "Kubernetes APT index download failed from both the primary and fallback repositories"
+      else
+        die "apt update failed"
+      fi
+    fi
     inf "Installing kubelet, kubeadm, and kubectl"
-    atlas_apt install -y -qq "kubelet=${K8S_DEB_VERSION}" "kubeadm=${K8S_DEB_VERSION}" "kubectl=${K8S_DEB_VERSION}" || die "Kubernetes package installation failed; target version ${K8S_DEB_VERSION} may be unavailable"
+    k8s_packages=("kubelet=${K8S_DEB_VERSION}" "kubeadm=${K8S_DEB_VERSION}" "kubectl=${K8S_DEB_VERSION}")
+    if ! ATLAS_APT_COMMAND_TIMEOUT=120 atlas_apt install -y -qq --download-only "${k8s_packages[@]}"; then
+      if [ "$repo_line" = "$primary_repo_line" ] && [ ! -f /var/lib/k8s-deploy/materials.json ]; then
+        warn "Kubernetes package pre-download timed out or failed on the primary repository; retrying with ${K8S_APT_FALLBACK_REPOSITORY}"
+        printf '%s\n' "$fallback_repo_line" > "$repo_file"
+        repo_line="$fallback_repo_line"
+        ATLAS_APT_COMMAND_TIMEOUT=90 atlas_apt update -qq \
+          || die "Kubernetes APT index download failed from the fallback repository"
+        ATLAS_APT_COMMAND_TIMEOUT=120 atlas_apt install -y -qq --download-only "${k8s_packages[@]}" \
+          || die "Kubernetes package pre-download failed from the fallback repository; target version ${K8S_DEB_VERSION} may be unavailable"
+      else
+        die "Kubernetes package pre-download failed; target version ${K8S_DEB_VERSION} may be unavailable"
+      fi
+    fi
+    atlas_apt install -y -qq "${k8s_packages[@]}" \
+      || die "Kubernetes package installation failed; target version ${K8S_DEB_VERSION} may be unavailable"
     # hold：K8s 升级必须用 kubeadm upgrade 一次一个 minor，apt 自动升级会破坏版本纪律
     apt-mark hold kubelet kubeadm kubectl
     pass "Installed and held packages: $(kubeadm version -o short 2>/dev/null)"
   fi
   if [ "$(dpkg-query -W -f='${Version}' cri-tools 2>/dev/null || true)" != "$CRI_TOOLS_DEB_VERSION" ]; then
-    atlas_apt install -y -qq "cri-tools=$CRI_TOOLS_DEB_VERSION" || die "CRI diagnostics package installation failed"
+    cri_tools_package="cri-tools=$CRI_TOOLS_DEB_VERSION"
+    if ! ATLAS_APT_COMMAND_TIMEOUT=120 atlas_apt install -y -qq --download-only "$cri_tools_package"; then
+      current_repo_line="$(cat "$repo_file" 2>/dev/null || true)"
+      if [ "$current_repo_line" = "$primary_repo_line" ] && [ ! -f /var/lib/k8s-deploy/materials.json ]; then
+        warn "CRI tools package pre-download timed out or failed on the primary repository; retrying with ${K8S_APT_FALLBACK_REPOSITORY}"
+        printf '%s\n' "$fallback_repo_line" > "$repo_file"
+        ATLAS_APT_COMMAND_TIMEOUT=90 atlas_apt update -qq \
+          || die "Kubernetes APT index download failed from the fallback repository"
+        ATLAS_APT_COMMAND_TIMEOUT=120 atlas_apt install -y -qq --download-only "$cri_tools_package" \
+          || die "CRI tools package pre-download failed from the fallback repository"
+      else
+        die "CRI tools package pre-download failed"
+      fi
+    fi
+    ATLAS_APT_COMMAND_TIMEOUT=300 atlas_apt install -y -qq "$cri_tools_package" \
+      || die "CRI diagnostics package installation failed"
   fi
   command -v crictl >/dev/null || die 'CRI diagnostics executable is missing after installation'
   python3 "${STORAGE_HELPER%/*}/containerd.py" "$K8S_VERSION" || die "$(atlas_t ops.containerd.failed)"
   systemctl enable kubelet >/dev/null 2>&1 || true
   inf "kubelet enabled at boot (restarts before kubeadm init are expected)"
+  NODE_SYSTEMD_METRICS_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/node-systemd-metrics.py"
+  [ -r "$NODE_SYSTEMD_METRICS_HELPER" ] || die 'Missing node-systemd-metrics.py; copy the complete deployment package'
+  python3 "$NODE_SYSTEMD_METRICS_HELPER" --install || die 'Could not install host kubelet/containerd systemd metrics timer'
+  pass 'Host kubelet/containerd metrics timer is installed and enabled'
 fi
 
 # ============================================================== 汇总
