@@ -11,7 +11,7 @@ python3 tests/e2e/monitoring_systemd_remove.py \
   --image LOCAL_SYSTEMD_IMAGE --confirm atlas-monitor-e2e
 ```
 
-2026-11-18 Ubuntu 24.04 systemd 测试通过。修改后的 unit 和符号链接均被拒绝，正常卸载保留其他 textfile 和测试用 kubelet/containerd 服务 PID，重复卸载与重装成功。临时容器和本次构建的镜像已清理。隔离集群的真实 SSH 和 06 计划执行证据另见[生产故障定位清单](../../docs/07-监控与预警/04-监控告警验证与生产故障定位清单.md)。
+2026-11-18 Ubuntu 24.04 systemd 测试通过。修改后的 unit 和符号链接均被拒绝，正常卸载保留其他 textfile 和测试用 kubelet/containerd 服务 PID，重复卸载与重装成功。临时容器和本次构建的镜像已清理。隔离集群的真实 SSH 和 06 计划执行证据另见[0.4.0 最终测试报告](../reports/0.4.0/最终测试报告.md)。
 
 同日 `monitoring_operator.py --self-monitoring` 通过真实告警求值分别验证 kubelet 服务异常和 textfile 停更。模拟服务异常时持续刷新文件。模拟停更时让 exporter 持续读取过期文件，验证实际遥测告警触发，再刷新文件并确认告警解除。临时 Kind 集群已清理。
 

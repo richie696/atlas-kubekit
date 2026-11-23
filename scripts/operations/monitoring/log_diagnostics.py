@@ -231,7 +231,10 @@ def enrich_text(notification, settings, query_logs, lang="zh_CN"):
         selector_value = selector(labels)
         name = localized_alert_name(alert.get("name", ""), lang) if isinstance(alert, dict) else _message("no_summary", lang)
         lines = ["\n" + _message("name", lang) + ": " + name]
-        if endpoint is None:
+        link = explore_url(settings, alert) if settings["grafana_explore_url"] else None
+        if link:
+            lines.append(_message("source_link", lang) + ": " + link)
+        elif endpoint is None:
             lines.append(status_text("source_missing", lang))
         elif selector_value is None:
             lines.append(status_text("insufficient_context", lang))
@@ -254,9 +257,6 @@ def enrich_text(notification, settings, query_logs, lang="zh_CN"):
                 if result.truncated and not was_truncated:
                     lines.append(status_text("truncated", lang))
         sections.append("\n".join(lines))
-        link = explore_url(settings, alert) if settings["grafana_explore_url"] else None
-        if link:
-            sections[-1] += "\n" + _message("source_link", lang) + ": " + link
     if not sections:
         sections.append(status_text("source_missing" if endpoint is None else "insufficient_context", lang))
     diagnostics = "\n" + "\n".join(sections)

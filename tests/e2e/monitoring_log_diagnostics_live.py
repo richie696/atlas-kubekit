@@ -60,7 +60,7 @@ assert "/explore?" not in without_link, "Grafana link was emitted without a conf
 linked_settings = {**settings, "grafana_explore_url": "https://grafana.example.com",
                    "loki_datasource_uid": "loki-main"}
 with_link = log_diagnostics.enrich_text(notification, linked_settings, query, "zh_CN")
-assert marker in with_link, "linked notification omitted the real Loki marker"
+assert marker not in with_link, "linked notification also exposed raw logs"
 assert "https://grafana.example.com/explore?" in with_link, "configured HTTPS Explore link was omitted"
 node_notification = Notification("e2e-node", "中文测试告警：节点日志关联检查", "firing", (node_alert,))
 node_text = log_diagnostics.enrich_text(node_notification, settings, query, "zh_CN")

@@ -8,7 +8,7 @@
 
 - 工程名称：**Atlas KubeKit**
 - GitHub 仓库名称：`atlas-kubekit`
-- 当前正式版本：[`0.3.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.3.0)，发布日期为 2026-11-10，tag 为 `v0.3.0`，比较基线为 `v0.2.0`；验收见 [发布记录](06-版本0.3.0发布验收.md)，源码版本以 [VERSION](../../VERSION) 为准。
+- 当前正式版本：[`0.4.0`](https://github.com/richie696/atlas-kubekit/releases/tag/v0.4.0)，发布日期为 2026-11-23，tag 为 `v0.4.0`，比较基线为 `v0.3.0`；验收见 [最终测试报告](../../tests/reports/0.4.0/最终测试报告.md)，源码版本以 [VERSION](../../VERSION) 为准。
 - Git 远程地址：`git@github.com:richie696/atlas-kubekit.git`
 - 品牌署名：**By Atlas Richie**
 - MIT 版权署名：**Atlas Richie**

@@ -109,6 +109,12 @@ class RegistryStageTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('server = "https://registry.k8s.io"', mirror)
         self.assertIn('capabilities = ["pull", "resolve"]', mirror)
+        quay = (self.containerd / "certs.d/quay.io/hosts.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('server = "https://quay.io"', quay)
+        self.assertIn('[host."https://quay.m.daocloud.io"]', quay)
+        self.assertIn('capabilities = ["pull", "resolve"]', quay)
         local = (self.containerd / "certs.d" / self.registry / "hosts.toml").read_text(
             encoding="utf-8"
         )
@@ -145,6 +151,25 @@ class RegistryStageTests(unittest.TestCase):
         self.assertEqual(
             local_file.read_text(encoding="utf-8"),
             "server = 'somebody-elses-config'\n",
+        )
+        self.assertFalse(self.systemctl_log.exists())
+
+    def test_rejects_unowned_quay_config_without_overwriting_it(self) -> None:
+        quay_host = self.containerd / "certs.d" / "quay.io"
+        quay_host.mkdir(parents=True)
+        quay_file = quay_host / "hosts.toml"
+        quay_file.write_text("server = 'somebody-elses-config'\n", encoding="utf-8")
+        config_before = (self.containerd / "config.toml").read_bytes()
+
+        result = self._run(self.registry)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("conflicts", result.stderr)
+        self.assertEqual(
+            (self.containerd / "config.toml").read_bytes(), config_before
+        )
+        self.assertEqual(
+            quay_file.read_text(encoding="utf-8"), "server = 'somebody-elses-config'\n"
         )
         self.assertFalse(self.systemctl_log.exists())
 

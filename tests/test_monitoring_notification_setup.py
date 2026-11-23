@@ -256,7 +256,7 @@ class MonitoringNotificationSetupTests(unittest.TestCase):
                     setup.validate_webhook(kind, endpoint)
 
     def test_email_receiver_override_is_validated(self):
-        responses = iter(("1", "atlas-email", "zh_CN", "warning", "", "invalid receiver",
+        responses = iter(("1", "atlas-email", "zh_CN", "warning", "invalid receiver",
                           "smtp.example.test",
                           "465", "sender@example.test", "receiver@example.test", "sender@example.test", "pass"))
         with patch.object(setup, "ask", side_effect=lambda *args, **kwargs: next(responses)):

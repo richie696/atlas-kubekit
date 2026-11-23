@@ -97,7 +97,7 @@ class RelayHTTPTest(unittest.TestCase):
         with patch.object(dispatch.loki, "query", return_value=loki.QueryResult("ok", ("panic: disk unavailable",))), \
              patch.object(dispatch.wecom, "deliver", side_effect=self.send):
             self.assertEqual(linked_deliver(json.dumps(body).encode()), "accepted")
-        self.assertIn("panic: disk unavailable", self.sent[-1])
+        self.assertNotIn("panic: disk unavailable", self.sent[-1])
         self.assertIn("https://grafana.example.com/explore?", self.sent[-1])
 
         self.sent.clear()

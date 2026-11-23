@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="1180" viewBox="0 0 1540 1180" role="img" aria-labelledby="title desc"><title id="title">监控中心与业务 Kubernetes 集群</title><desc id="desc">业务集群的 Agent 与 Alloy 分别上送指标与日志。独立监控集群集中查询、评估规则和通知。两个集群都可以作为独立 AS 的客户端；身份服务与遥测分开部署。</desc><defs>
+<marker id="a0" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#007b75"/></marker>
+<marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2867a1"/></marker>
+<marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#715198"/></marker>
+<marker id="a3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#955819"/></marker>
+<marker id="a4" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#577082"/></marker>
+</defs>
+<g font-family="PingFang SC, Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<rect x="0" y="0" width="1540" height="1180" rx="0" fill="#f7f9fb" stroke="none"/>
+<rect x="0" y="0" width="1540" height="110" rx="0" fill="#17334a" stroke="none"/>
+<text x="32" y="49" fill="white" font-size="34" font-weight="650">监控中心与业务 Kubernetes 集群</text>
+<text x="33" y="84" fill="#cae5ec" font-size="19" font-weight="400">Atlas KubeKit  0.4.0     /     部署边界、数据流与访问入口</text>
+<rect x="472" y="129" width="595" height="107" rx="14" fill="#f1eaf7" stroke="#cbbad9"/>
+<text x="495" y="167" fill="#715198" font-size="25" font-weight="650">AS 授权服务器  ·  独立部署</text>
+<text x="495" y="201" fill="#17334a" font-size="17" font-weight="400">oauth.home.arpa    /    用户登录、授权、签发令牌、发布 JWKS</text>
+<path d="M214 308 V260 H575 V240" fill="none" stroke="#715198" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#a2)"/>
+<text x="55" y="246" fill="#715198" font-size="17" font-weight="650">业务应用可各自注册 OIDC 客户端</text>
+<path d="M1295 308 V261 H969 V240" fill="none" stroke="#715198" stroke-width="2.4" marker-end="url(#a2)"/>
+<text x="1098" y="246" fill="#715198" font-size="17" font-weight="650">监控入口已接入 OIDC</text>
+<g transform="translate(0,180)">
+<rect x="24" y="133" width="385" height="572" rx="14" fill="#eaf3f2" stroke="#bbd5d1"/>
+<rect x="432" y="133" width="1084" height="572" rx="14" fill="#eaf0f8" stroke="#becfe2"/>
+<text x="44" y="174" fill="#007b75" font-size="26" font-weight="650">业务 K8s × N</text>
+<text x="44" y="205" fill="#17334a" font-size="17" font-weight="400">每个集群使用独立 cluster 标识</text>
+<text x="456" y="174" fill="#2867a1" font-size="26" font-weight="650">独立监控 K8s</text>
+<text x="456" y="205" fill="#17334a" font-size="17" font-weight="400">中心实例 · monitoring / logging / envoy-gateway-system</text>
+<rect x="44" y="232" width="345" height="133" rx="10" fill="white" stroke="#c9d7df"/>
+<rect x="44" y="244" width="4" height="109" rx="2" fill="#007b75" stroke="none"/>
+<text x="60" y="263" fill="#007b75" font-size="21" font-weight="650">指标源 → Prometheus Agent</text>
+<text x="60" y="290" fill="#17334a" font-size="16" font-weight="400">控制面、kubelet、业务 /metrics</text>
+<text x="60" y="313" fill="#17334a" font-size="16" font-weight="400">node-exporter、kube-state-metrics</text>
+<text x="60" y="336" fill="#17334a" font-size="16" font-weight="400">按需接入 LB、CSI / Longhorn 指标</text>
+<rect x="44" y="451" width="345" height="107" rx="10" fill="white" stroke="#c9d7df"/>
+<rect x="44" y="463" width="4" height="83" rx="2" fill="#715198" stroke="none"/>
+<text x="60" y="482" fill="#715198" font-size="21" font-weight="650">Pod 日志 → Grafana Alloy</text>
+<text x="60" y="509" fill="#17334a" font-size="16" font-weight="400">通过 Kubernetes API 发现并采集</text>
+<text x="60" y="532" fill="#17334a" font-size="16" font-weight="400">加入集群、命名空间、Pod 标签</text>
+<text x="44" y="624" fill="#17334a" font-size="16" font-weight="400">业务存储仍由所属集群管理。</text>
+<text x="44" y="652" fill="#17334a" font-size="16" font-weight="400">中心侧仅接收遥测数据。</text>
+<rect x="551" y="232" width="262" height="118" rx="10" fill="white" stroke="#c9d7df"/>
+<rect x="551" y="244" width="4" height="94" rx="2" fill="#007b75" stroke="none"/>
+<text x="567" y="263" fill="#007b75" font-size="21" font-weight="650">Prometheus</text>
+<text x="567" y="290" fill="#17334a" font-size="16" font-weight="400">接收指标、存储时间序列</text>
+<text x="567" y="313" fill="#17334a" font-size="16" font-weight="400">执行 PromQL 与告警规则</text>
+<path d="M389 293 H548" fill="none" stroke="#007b75" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#a0)"/>
+<text x="397" y="280" fill="#007b75" font-size="14" font-weight="650">Remote Write</text>
+<rect x="885" y="232" width="250" height="118" rx="10" fill="white" stroke="#c9d7df"/>
+<rect x="885" y="244" width="4" height="94" rx="2" fill="#955819" stroke="none"/>
+<text x="901" y="263" fill="#955819" font-size="21" font-weight="650">Alertmanager</text>
+<text x="901" y="290" fill="#17334a" font-size="16" font-weight="400">分组、去重、静默、抑制</text>
+<text x="901" y="313" fill="#17334a" font-size="16" font-weight="400">按接收器路由触发与恢复</text>
+<path d="M813 291 H881" fill="none" stroke="#955819" stroke-width="2.4" marker-end="url(#a3)"/>
+<text x="827" y="277" fill="#955819" font-size="14" font-weight="400">告警</text>
+<rect x="1210" y="232" width="280" height="118" rx="10" fill="white" stroke="#c9d7df"/>
+<rect x="1210" y="244" width="4" height="94" rx="2" fill="#955819" stroke="none"/>
+<text x="1226" y="263" fill="#955819" font-size="21" font-weight="650">Atlas 通知中继</text>
+<text x="1226" y="290" fill="#17334a" font-size="16" font-weight="400">与 Alertmanager 同 Pod</text>
+<text x="1226" y="313" fill="#17334a" font-size="16" font-weight="400">格式化中文消息并投递</text>
+<path d="M1135 291 H1206" fill="none" stroke="#955819" stroke-width="2.4" marker-end="url(#a3)"/>
+<text x="1142" y="277" fill="#955819" font-size="13" font-weight="400">Webhook</text>
+<rect x="551" y="451" width="262" height="107" rx="10" fill="white" stroke="#c9d7df"/>
+<rect x="551" y="463" width="4" height="83" rx="2" fill="#715198" stroke="none"/>
+<text x="567" y="482" fill="#715198" font-size="21" font-weight="650">Loki</text>
+<text x="567" y="509" fill="#17334a" font-size="16" font-weight="400">存储日志，提供 LogQL 查询</text>
+<text x="567" y="532" fill="#17334a" font-size="16" font-weight="400">Loki Canary 检查日志链路</text>
+<path d="M389 502 H548" fill="none" stroke="#715198" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#a2)"/>
+<text x="400" y="488" fill="#715198" font-size="15" font-weight="650">Loki Push</text>
+<rect x="885" y="451" width="250" height="107" rx="10" fill="white" stroke="#c9d7df"/>
+<rect x="885" y="463" width="4" height="83" rx="2" fill="#2867a1" stroke="none"/>
+<text x="901" y="482" fill="#2867a1" font-size="21" font-weight="650">Grafana</text>
+<text x="901" y="509" fill="#17334a" font-size="16" font-weight="400">向 Prometheus 查询指标</text>
+<text x="901" y="532" fill="#17334a" font-size="16" font-weight="400">配置 Loki 数据源后可查日志</text>
+<path d="M938 451 V386 H720 V353" fill="none" stroke="#2867a1" stroke-width="2.4" marker-end="url(#a1)"/>
+<text x="739" y="378" fill="#2867a1" font-size="13" font-weight="400">PromQL</text>
+<path d="M885 511 H817" fill="none" stroke="#715198" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#a2)"/>
+<text x="821" y="499" fill="#715198" font-size="13" font-weight="400">LogQL</text>
+<path d="M1318 350 V413 H620 V447" fill="none" stroke="#715198" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#a2)"/>
+<text x="1015" y="405" fill="#715198" font-size="15" font-weight="400">启用日志关联时查询 Loki</text>
+<rect x="1210" y="451" width="280" height="107" rx="10" fill="white" stroke="#c9d7df"/>
+<rect x="1210" y="463" width="4" height="83" rx="2" fill="#955819" stroke="none"/>
+<text x="1226" y="482" fill="#955819" font-size="21" font-weight="650">渠道适配（中继内）</text>
+<text x="1226" y="509" fill="#17334a" font-size="16" font-weight="400">Webhook → 外部群机器人</text>
+<text x="1226" y="532" fill="#17334a" font-size="16" font-weight="400">SMTP → 外部邮件服务</text>
+<path d="M1453 350 V448" fill="none" stroke="#955819" stroke-width="2.4" marker-end="url(#a3)"/>
+<rect x="452" y="582" width="1041" height="102" rx="9" fill="#dce7f2" stroke="none"/>
+<text x="468" y="612" fill="#2867a1" font-size="20" font-weight="650">中心也监控自身</text>
+<text x="468" y="640" fill="#17334a" font-size="17" font-weight="400">node-exporter / kube-state-metrics → Prometheus       ·       Alloy → Loki</text>
+<text x="468" y="665" fill="#17334a" font-size="15" font-weight="400">Prometheus Operator 根据 ServiceMonitor、PodMonitor、PrometheusRule 与 AlertmanagerConfig 协调配置。</text>
+<rect x="24" y="730" width="1492" height="193" rx="14" fill="white" stroke="#c9d7df"/>
+<text x="44" y="766" fill="#17334a" font-size="24" font-weight="650">访问与独立观察</text>
+<text x="44" y="808" fill="#2867a1" font-size="17" font-weight="650">页面访问</text>
+<text x="170" y="808" fill="#17334a" font-size="17" font-weight="400">内网 DNS 解析页面域名。浏览器 → 双机 HAProxy / Keepalived VIP → Envoy Proxy → 三个监控页面</text>
+<text x="170" y="846" fill="#17334a" font-size="17" font-weight="400">Envoy Gateway 控制器配置代理；外部 AS 完成 OIDC 登录，Grafana 通过 JWKS 验证身份令牌。</text>
+<text x="44" y="887" fill="#007b75" font-size="17" font-weight="650">外部观察</text>
+<text x="170" y="887" fill="#17334a" font-size="17" font-weight="400">独立主机上的观察器 → 探测 API VIP、DNS、HTTPS → 独立发送故障与恢复通知。</text>
+<path d="M42 961 H90" fill="none" stroke="#577082" stroke-width="2.4" marker-end="url(#a4)"/>
+<text x="103" y="967" fill="#17334a" font-size="16" font-weight="400">实线：已部署组件间的协作</text>
+<path d="M345 961 H393" fill="none" stroke="#577082" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#a4)"/>
+<text x="408" y="967" fill="#17334a" font-size="16" font-weight="400">虚线：需接入或启用的链路</text>
+<text x="925" y="967" fill="#577082" font-size="15" font-weight="400">通知渠道为外部服务；图示位置不代表 Pod 副本数。</text>
+</g></g></svg>

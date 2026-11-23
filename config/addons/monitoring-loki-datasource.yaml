@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atlas-grafana-loki-datasource
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+    atlas-kubekit.io/managed-by: monitoring
+data:
+  atlas-loki.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Atlas Loki
+        uid: atlas-loki
+        type: loki
+        orgId: 1
+        access: proxy
+        url: http://loki.logging.svc.cluster.local:3100
+        editable: false

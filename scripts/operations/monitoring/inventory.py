@@ -2,6 +2,7 @@
 """Read-only Kubernetes inventory; API state is not monitoring coverage."""
 from ..models import OperationError
 from .publication import OWNER
+from . import relay_publication
 
 
 def _items(client, kind, namespace=None):
@@ -16,7 +17,7 @@ def _items(client, kind, namespace=None):
 
 
 def _email_template_status(client):
-    """Inspect only the owned email template shape; never return address/secret data."""
+    """Inspect native HTML or the script-managed HTML relay without exposing secrets."""
     items = _items(client, "alertmanagerconfigs.monitoring.coreos.com")
     if items is None:
         return {"state": "unverified", "html": "unverified", "text": "unverified", "routes": 0}
@@ -28,7 +29,7 @@ def _email_template_status(client):
                 isinstance(labels, dict) and labels.get(OWNER) == "monitoring"):
             owned.append(item)
     if not owned:
-        return {"state": "missing", "html": "missing", "text": "missing", "routes": 0}
+        return _relay_email_template_status(client, items)
 
     email_configs = []
     for item in owned:
@@ -59,6 +60,57 @@ def _email_template_status(client):
     text_status = "disabled" if all(value in (None, "") for value in text_values) else "enabled"
     state = "present" if html_status == "styled" and text_status == "disabled" else "incomplete"
     return {"state": state, "html": html_status, "text": text_status, "routes": len(owned)}
+
+
+def _relay_email_template_status(client, alertmanager_configs):
+    """Verify relay route, selected CR shape, and content-addressed HTML renderer bundle."""
+    missing = {"state": "missing", "html": "missing", "text": "disabled", "routes": 0}
+    try:
+        config_map = client.get("configmap", relay_publication.CONFIG_NAME, "monitoring", optional=True)
+        if config_map is None:
+            return missing
+        relay_publication._identity(config_map, "data")
+        body = relay_publication._route_document(config_map)
+        email_routes = [route for route in body["routes"] if route.get("kind") == "email"]
+        if not email_routes:
+            return missing
+
+        route_names = {route["receiver"] for route in email_routes}
+        managed_routes = []
+        release_values = set()
+        for item in alertmanager_configs:
+            metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+            labels = metadata.get("labels", {}) if isinstance(metadata, dict) else {}
+            spec = item.get("spec", {}) if isinstance(item, dict) else {}
+            route = spec.get("route", {}) if isinstance(spec, dict) else {}
+            receivers = spec.get("receivers", []) if isinstance(spec, dict) else []
+            if (not isinstance(labels, dict) or labels.get(OWNER) != "monitoring" or
+                    route.get("receiver") not in route_names or not isinstance(receivers, list)):
+                continue
+            receiver_name = route["receiver"]
+            receiver = next((entry for entry in receivers
+                             if isinstance(entry, dict) and entry.get("name") == receiver_name), None)
+            webhooks = receiver.get("webhookConfigs", []) if isinstance(receiver, dict) else []
+            if any(isinstance(webhook, dict) and
+                   webhook.get("url") == "http://127.0.0.1:" + str(relay_publication.PORT) + "/v1/alert"
+                   for webhook in webhooks):
+                managed_routes.append(item)
+                release_values.add(labels.get("release"))
+        if not managed_routes or len(release_values) != 1:
+            return {"state": "incomplete", "html": "unverified", "text": "disabled",
+                    "routes": len(email_routes)}
+
+        release = next(iter(release_values))
+        expected_code = relay_publication.code_config_map("monitoring", release)
+        code_map = client.get("configmap", expected_code["metadata"]["name"], "monitoring", optional=True)
+        code_identity = relay_publication._code_identity(code_map)
+        expected_digest = expected_code["metadata"]["annotations"][relay_publication.SPEC_HASH]
+        if code_identity is None or code_identity["specHash"] != expected_digest:
+            return {"state": "incomplete", "html": "missing", "text": "disabled",
+                    "routes": len(email_routes)}
+        return {"state": "present", "html": "styled", "text": "disabled", "routes": len(email_routes)}
+    except (OperationError, KeyError, TypeError, ValueError):
+        return {"state": "unverified", "html": "unverified", "text": "unverified", "routes": 0}
 
 
 def collect(client):

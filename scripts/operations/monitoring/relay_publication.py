@@ -554,10 +554,48 @@ def _route_document(config_map_value):
                                                "secretName": "atlas-validation", "endpointKey": "endpoint", "secretKey": None})
         if "diagnostics" in validated:
             value["diagnostics"] = validated["diagnostics"]
-        value["routes"] = [item for item in value["routes"] if item["receiver"] != "atlas-validation"]
         return value
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         raise OperationError("ops.monitoring.robot_incompatible") from None
+
+
+def sync_explore_entry(client, namespace, manager_name, release, version, url):
+    """Update the shared diagnostic entry and relay code without changing receiver credentials."""
+    from .log_diagnostics import validate_settings
+    manager = client.get(ALERTMANAGER, manager_name, namespace)
+    _manager_compatible(manager, namespace, release, version)
+    current = client.get(CONFIG_MAP, CONFIG_NAME, namespace, optional=True)
+    if current is None and _managed_sidecar(manager["spec"]) is None:
+        return
+    if current is None or _managed_sidecar(manager["spec"]) is None:
+        raise OperationError("ops.monitoring.robot_incompatible")
+    body = _route_document(current)
+    if not body.get("diagnostics"):
+        return
+    settings = body["diagnostics"]
+    body["diagnostics"] = validate_settings({
+        **settings, "grafana_explore_url": url or None,
+        "loki_datasource_uid": (settings.get("loki_datasource_uid") or "atlas-loki") if url else None,
+        "grafana_org_id": settings.get("grafana_org_id", 1) if url else 1})
+    config = config_map_data(namespace, release, body)
+    code = code_config_map(namespace, release)
+    name = code["metadata"]["name"]
+    existing = client.get(CONFIG_MAP, name, namespace, optional=True)
+    if existing is None:
+        if client.create(code) is None:
+            raise OperationError("ops.change.stale")
+    elif _code_identity(existing)["specHash"] != code["metadata"]["annotations"][SPEC_HASH]:
+        raise OperationError("ops.change.stale")
+    updated = copy.deepcopy(manager)
+    volumes = updated["spec"]["volumes"]
+    idx = next(i for i, vol in enumerate(volumes) if vol["name"] == CODE_VOLUME_NAME)
+    volumes[idx] = code_volume(name)
+    updated["spec"].setdefault("podMetadata", {}).setdefault("annotations", {})[
+        "atlas-kubekit.io/relay-config-sha256"] = fingerprint(body)
+    if config["data"] != current["data"]:
+        _write(client, current, config, "data", CONFIG_MAP)
+    if updated != manager and client.replace(updated) is None:
+        raise OperationError("ops.change.stale")
 
 
 def existing_credentials(spec, receiver):

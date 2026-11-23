@@ -237,6 +237,23 @@ class RelayPublicationTest(unittest.TestCase):
         self.assertEqual(publication.existing_credentials(client.manager["spec"], other_route["receiver"]),
                          (("relay-auth", "token"), frozenset({other_route["secretName"]})))
 
+        diag = {"loki_endpoint": "http://loki.logging.svc", "before_seconds": 300,
+                "after_seconds": 60, "max_lines": 20, "max_message_bytes": 8192}
+        params = dict(replaced_values, diagnostics=diag)
+        params["expected"] = publication.capture(client, params)
+        publication.publish(client, params)
+        config_key = (publication.CONFIG_MAP, "monitoring", publication.CONFIG_NAME)
+        routes_before = json.loads(client.objects[config_key]["data"]["routes.json"])["routes"]
+        url = "https://grafana.monitoring.home.arpa"
+        for entry in (url, None):
+            publication.sync_explore_entry(client, "monitoring", "stack", "stack", "0.28.1", entry)
+            body = json.loads(client.objects[config_key]["data"]["routes.json"])
+            self.assertEqual(body["routes"], routes_before)
+            self.assertEqual(body["diagnostics"]["grafana_explore_url"], entry)
+            count = len(client.writes)
+            publication.sync_explore_entry(client, "monitoring", "stack", "stack", "0.28.1", entry)
+            self.assertEqual(len(client.writes), count)
+
     def test_api_preflight_uses_replace_for_existing_resources(self):
         class Client:
             def __init__(self):

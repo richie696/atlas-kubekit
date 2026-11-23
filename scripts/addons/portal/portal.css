@@ -1,0 +1,184 @@
+:root {
+  color-scheme:light;
+  --ink:#172c33;
+  --muted:#49646c;
+  --line:#cbdad8;
+  --accent:#00675c;
+  font:100%/1.55 "Inter","PingFang SC","Microsoft YaHei",sans-serif;
+  color:var(--ink);
+  background:#f5f8f7;
+}
+
+* {
+  box-sizing:border-box;
+}
+
+body {
+  margin:0;
+}
+
+header {
+  background:#122d34;
+  color:white;
+}
+
+.bar,main {
+  width:min(75rem,92%);
+  margin:auto;
+}
+
+.bar {
+  min-height:4rem;
+  display:flex;
+  align-items:center;
+  gap:1.5rem;
+}
+
+.bar strong {
+  font-size:1.35rem;
+}
+
+.bar strong span {
+  color:#8bdbca;
+}
+
+.bar>span {
+  border-left:1px solid #648084;
+  padding-left:1.5rem;
+}
+
+main {
+  padding:2.8rem 0 5rem;
+}
+
+.intro,.directory {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:1.25rem;
+}
+
+.intro h1 {
+  font-size:clamp(2rem,5vw,3rem);
+  line-height:1.2;
+  letter-spacing:-.04em;
+  margin:0;
+}
+
+.intro p {
+  color:var(--muted);
+}
+
+label {
+  font-weight:600;
+}
+
+input {
+  display:block;
+  width:min(22rem,85vw);
+  border:1px solid #829b98;
+  padding:.7rem .9rem;
+  margin-top:.3rem;
+  border-radius:.5rem;
+  font:inherit;
+}
+
+nav,.links {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr));
+  gap:.75rem;
+}
+
+nav {
+  margin:1.5rem 0 2.25rem;
+}
+
+a {
+  color:var(--accent);
+  text-decoration:none;
+}
+
+a:hover {
+  text-decoration:underline;
+}
+
+nav a {
+  background:#e2f2ed;
+  border:1px solid #a9d6c9;
+  border-top:3px solid var(--accent);
+  border-radius:.65rem;
+  padding:1rem 1.1rem;
+  display:flex;
+  flex-direction:column;
+  gap:.35rem;
+}
+
+nav small,#count {
+  color:var(--muted);
+  font-size:.9rem;
+}
+
+details {
+  margin:.75rem 0;
+  background:white;
+  border:1px solid var(--line);
+  border-radius:.65rem;
+}
+
+summary {
+  padding:1rem;
+  cursor:pointer;
+  font-weight:650;
+}
+
+.links {
+  padding:0 1rem 1rem;
+  gap:.25rem .9rem;
+}
+
+.links a {
+  display:flex;
+  align-items:center;
+  min-height:44px;
+  border-bottom:1px solid #edf2f1;
+  overflow-wrap:anywhere;
+}
+
+h2 {
+  margin:.3rem 0;
+  font-size:1.35rem;
+}
+
+:focus-visible {
+  outline:3px solid #1461ba;
+  outline-offset:2px;
+}
+
+[hidden] {
+  display:none!important;
+}
+
+@media(max-width:44rem) {
+  main {
+    padding-top:1.5rem;
+  }
+  .intro {
+    align-items:stretch;
+    flex-direction:column;
+  }
+  input {
+    width:100%;
+  }
+  nav {
+    grid-template-columns:1fr 1fr;
+  }
+  .links {
+    grid-template-columns:1fr;
+  }
+}
+
+@media(max-width:24rem) {
+  nav {
+    grid-template-columns:1fr;
+  }
+}

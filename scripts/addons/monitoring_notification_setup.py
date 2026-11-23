@@ -208,16 +208,17 @@ def configure_route(lang, namespace, alertmanager, version, release, relay_image
     severity = ask(lang, "phase03.monitoring.setup_severity", "warning")
     if severity not in ("warning", "critical", "info"):
         raise ValueError(tr(lang, "phase03.monitoring.setup_invalid_choice"))
-    grafana_url = grafana_url or ask(lang, "phase03.monitoring.setup_grafana_url", "")
     if grafana_url:
         try:
             log_diagnostics.validate_settings({"loki_endpoint": "http://loki.logging.svc.cluster.local:3100",
+                                               "before_seconds": 300, "after_seconds": 60, "max_lines": 20,
+                                               "max_message_bytes": 8192,
                                                "grafana_explore_url": grafana_url,
-                                               "loki_datasource_uid": datasource_uid or "loki",
+                                               "loki_datasource_uid": datasource_uid or "atlas-loki",
                                                "grafana_org_id": org_id})
         except (TypeError, ValueError):
             raise ValueError(tr(lang, "phase03.monitoring.setup_invalid_grafana_url")) from None
-        datasource_uid = datasource_uid or ask(lang, "phase03.monitoring.setup_datasource_uid", "loki")
+        datasource_uid = datasource_uid or ask(lang, "phase03.monitoring.setup_datasource_uid", "atlas-loki")
     if kind == "email":
         receiver = ask(lang, "phase03.monitoring.setup_email_receiver", receiver)
         if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", receiver) or len(receiver) > 63:
@@ -273,6 +274,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Guided first-time monitoring notification setup")
     parser.add_argument("--lang", choices=("en", "zh_CN", "zh_TW"), default="en")
     parser.add_argument("--namespace", default="monitoring")
+    parser.add_argument("--grafana-url", help="Use the already verified public Grafana URL")
+    parser.add_argument("--sync-existing-entry", action="store_true")
     parser.add_argument("--require-complete", action="store_true",
                          help="return a nonzero status when route setup is cancelled")
     values = parser.parse_args(argv)
@@ -300,6 +303,10 @@ def main(argv=None):
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
             raise ValueError(tr(lang, "phase03.monitoring.setup_requires_alloy"))
         alertmanager, version, release = alertmanager_identity(namespace, lang)
+        if values.sync_existing_entry:
+            client = Kubernetes(os.environ.get("KUBECONFIG", "/etc/kubernetes/admin.conf"))
+            relay_publication.sync_explore_entry(client, namespace, alertmanager, release, version, values.grafana_url)
+            return 0
         ui = tr(lang, "phase03.monitoring.setup_intro", alertmanager, version, release)
         print(ui)
         image = relay_publication.runtime_image(ask(lang, "phase03.monitoring.setup_relay_image"))
@@ -309,8 +316,8 @@ def main(argv=None):
                  "secretName": "atlas-route-secret", "endpointKey": "url", "secretKey": None}])
         except (TypeError, ValueError):
             raise ValueError(tr(lang, "phase03.monitoring.setup_invalid_relay_image")) from None
-        grafana_url = ask(lang, "phase03.monitoring.setup_grafana_url", "")
-        datasource_uid = ask(lang, "phase03.monitoring.setup_datasource_uid", "loki") if grafana_url else ""
+        grafana_url = values.grafana_url if values.grafana_url is not None else ask(lang, "phase03.monitoring.setup_grafana_url", "")
+        datasource_uid = ask(lang, "phase03.monitoring.setup_datasource_uid", "atlas-loki") if grafana_url else ""
         org_id = ask(lang, "phase03.monitoring.setup_grafana_org_id", "1") if grafana_url else "1"
         if not org_id.isdecimal() or int(org_id) < 1:
             raise ValueError(tr(lang, "phase03.monitoring.setup_invalid_choice"))

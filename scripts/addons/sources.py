@@ -765,7 +765,7 @@ def resolve_envoy_proxy(metadata, output, paths, config):
             else:
                 selected_image, origin, warnings = version_proxy_image(version, Path(output).parent, config, chart_image)
         if selected_image:
-            selected_image = valid_proxy_image(selected_image)
+            selected_image = registry_ref(valid_proxy_image(selected_image), config)
             policy = {"global": {"images": {"envoyProxy": {"image": selected_image}}}}
             display = selected_image
     for warning in warnings:

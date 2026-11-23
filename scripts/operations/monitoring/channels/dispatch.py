@@ -47,5 +47,7 @@ def dispatch(body, receiver, kind, endpoint, secret=None, opener=None, now=None,
     if kind == "email":
         if not isinstance(smtp_settings, dict):
             raise ValueError("invalid SMTP route")
-        return smtp.deliver(notification, message, smtp_settings, secret)
+        links = tuple(filter(None, (log_diagnostics.explore_url(diagnostics, alert)
+                                    for alert in notification.alerts))) if diagnostics else ()
+        return smtp.deliver(notification, message, smtp_settings, secret, links=links)
     raise ValueError("invalid channel configuration")

@@ -179,6 +179,43 @@ def status():
     print(json.dumps(out))
 
 
+def probe_backends(data):
+    rows = data.get("backends")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 1000:
+        raise RuntimeError("ops.change.invalid_parameters")
+    results = []
+    for row in rows:
+        if not isinstance(row, str):
+            raise RuntimeError("ops.change.invalid_parameters")
+        host, separator, raw_port = row.rpartition(":")
+        try:
+            if not separator or not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
+                raise ValueError()
+            host = str(ipaddress.IPv4Address(host))
+            with socket.create_connection((host, int(raw_port)), timeout=3):
+                pass
+        except (ValueError, OSError):
+            raise RuntimeError("backend endpoint is not reachable: " + row) from None
+        results.append(row)
+    print(json.dumps({"reachable": results}))
+
+
+def transaction_info():
+    owner = reservation()
+    if owner is None:
+        print(json.dumps({"pending": False}))
+        return
+    directory = transaction_path(owner)
+    try:
+        old_state = json.loads(read_private(directory + "/state.old"))
+        new_state = json.loads(read_private(directory + "/state.new"))
+    except (OSError, ValueError, TypeError):
+        raise RuntimeError("ops.change.stale") from None
+    print(json.dumps({"pending": True, "token": owner,
+                      "committed": os.path.isfile(directory + "/committed"),
+                      "oldState": old_state, "newState": new_state}))
+
+
 def span(text, start):
     op = text.find("{", start)
     if op < 0:
@@ -468,6 +505,12 @@ def main():
         action = p.get("action")
         if action == "status":
             status()
+            return 0
+        if action == "probe-backends":
+            probe_backends(p)
+            return 0
+        if action == "transaction-info":
+            transaction_info()
             return 0
         owner = p.get("token")
         with host_operation(owner):

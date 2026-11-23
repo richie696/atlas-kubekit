@@ -35,7 +35,7 @@ def _settings(value):
     return result
 
 
-def render(notification, text, settings):
+def render(notification, text, settings, links=()):
     """Render escaped alert text into a compact card; no untrusted markup is emitted."""
     settings = _settings(settings)
     if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_TEXT_BYTES:
@@ -49,6 +49,11 @@ def render(notification, text, settings):
     subject = "[" + state + "] " + title
     color = "#c94f3d" if status == "firing" else "#67a83d"
     escaped = escape(text, quote=True).replace("\n", "<br>\n")
+    label = escape(translate(lang, "ops.monitoring.log_source_link"))
+    for url in set(links):
+        safe_url = escape(url, quote=True)
+        escaped = escaped.replace(label + ": " + safe_url,
+                                  '<a href="' + safe_url + '">' + label + "</a>")
     html = (
         '<!doctype html><html><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
@@ -69,12 +74,12 @@ def render(notification, text, settings):
     return subject, html
 
 
-def deliver(notification, text, settings, password, smtp_factory=None, ssl_context=None):
+def deliver(notification, text, settings, password, smtp_factory=None, ssl_context=None, *, links=()):
     """Send using implicit TLS (465) or verified STARTTLS (587), returning a safe outcome."""
     settings = _settings(settings)
     if not isinstance(password, str) or not password or len(password) > 8192 or any(ord(c) < 32 for c in password):
         raise ValueError("invalid SMTP credential")
-    subject, body = render(notification, text, settings)
+    subject, body = render(notification, text, settings, links)
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = settings["sender"]

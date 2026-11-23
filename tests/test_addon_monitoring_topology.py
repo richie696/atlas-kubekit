@@ -30,9 +30,14 @@ class MonitoringTopologyTest(unittest.TestCase):
         setup = script[script.index("monitoring_full_setup() {"):script.index("\nmonitoring_topology_setup() {")]
         self.assertIn("phase03.monitoring.confirm_center_topology", center)
         self.assertIn("monitoring_full_setup center", center)
-        self.assertLess(setup.index('if [ "$mode" = center ]'), setup.index("install_selected 4"))
+        self.assertLess(setup.index('case "$mode" in'), setup.index("install_selected 4"))
+        install_start = script.index("install_selected() {")
+        install = script[install_start:script.index("\nmonitoring_full_setup() {", install_start)]
+        center_setup = install[install.index('if [ "${ATLAS_MONITORING_MODE:-}" = center ]'):]
+        self.assertLess(center_setup.index('monitoring_topology.py" --mode center'),
+                        center_setup.index("install_chart prometheus-community"))
         self.assertIn('ATLAS_CLUSTER_PURPOSE="$(read_cluster_purpose)"', script)
-        self.assertIn('[ "$ATLAS_CLUSTER_PURPOSE" = monitoring ] && mode=center', center)
+        self.assertIn('[ "$ATLAS_CLUSTER_PURPOSE" = monitoring ] && mode=center', flow)
 
     def test_topology_marker_is_written_only_after_successful_component_setup(self):
         script = (Path(__file__).resolve().parents[1] / "03-install-addons.sh").read_text()

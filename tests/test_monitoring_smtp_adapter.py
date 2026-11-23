@@ -22,6 +22,14 @@ class SMTPAdapterTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", body)
         self.assertIn("<br>", body)
 
+    def test_only_generated_explore_link_is_clickable_in_html(self):
+        url = "https://grafana.example.com/explore?orgId=1&panes=abc"
+        label = "在 Grafana 中查看相关日志"
+        text = label + ": " + url + "\n" + label + ": https://untrusted.example/"
+        _, html = smtp.render(self.notification(), text, self.settings(), links=(url,))
+        self.assertIn('href="https://grafana.example.com/explore?orgId=1&amp;panes=abc"', html)
+        self.assertEqual(html.count("<a href="), 1)
+
     def test_resolved_uses_recovery_style(self):
         subject, body = smtp.render(self.notification("resolved"), "恢复", self.settings())
         self.assertIn("告警恢复", subject)

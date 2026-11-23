@@ -12,8 +12,9 @@ import unittest
 from unittest.mock import patch
 
 from scripts.operations import cli
-from scripts.operations.models import OperationError
+from scripts.operations.models import OperationError, fingerprint
 from scripts.operations.monitoring.inventory import collect
+from scripts.operations.monitoring import relay_publication
 
 
 class Client:
@@ -77,6 +78,41 @@ class MonitoringInventoryTest(unittest.TestCase):
         self.assertNotIn("private@example.test", json.dumps(result))
         self.assertNotIn("password", json.dumps(result))
 
+    def test_email_template_inspection_recognizes_owned_html_relay(self):
+        release = "kube-prometheus-stack"
+        route = {"receiver": "atlas-email", "kind": "email", "language": "zh_CN",
+                 "secretName": "atlas-smtp", "passwordKey": "password", "smtpHost": "smtp.example.test",
+                 "smtpPort": 465, "sender": "sender@example.test", "recipient": "recipient@example.test",
+                 "username": "sender@example.test"}
+        config_map = relay_publication.config_map("monitoring", release, [route])
+        config_map["metadata"].update({"uid": "routes-uid", "resourceVersion": "10"})
+        config_map["metadata"].setdefault("annotations", {})[relay_publication.SPEC_HASH] = fingerprint(
+            config_map["data"])
+        code_map = relay_publication.code_config_map("monitoring", release)
+        code_map["metadata"].update({"uid": "code-uid", "resourceVersion": "11"})
+        alertmanager_config = {
+            "metadata": {"name": "atlas-robot-atlas-email-0123456789", "namespace": "monitoring",
+                         "labels": {"release": release, "atlas-kubekit.io/managed-by": "monitoring"}},
+            "spec": {"route": {"receiver": "atlas-email"},
+                     "receivers": [{"name": "atlas-email", "webhookConfigs": [{
+                         "url": "http://127.0.0.1:" + str(relay_publication.PORT) + "/v1/alert"}]}]},
+        }
+
+        class RelayEmailClient(Client):
+            def get(self, kind, name=None, namespace=None, optional=False):
+                if kind == "alertmanagerconfigs.monitoring.coreos.com":
+                    return {"items": [alertmanager_config]}
+                if kind == "configmap" and name == relay_publication.CONFIG_NAME:
+                    return config_map
+                if kind == "configmap" and name == code_map["metadata"]["name"]:
+                    return code_map
+                return super().get(kind, name, namespace, optional)
+
+        result = collect(RelayEmailClient())["emailTemplate"]
+        self.assertEqual(result, {"state": "present", "html": "styled", "text": "disabled", "routes": 1})
+        self.assertNotIn("recipient@example.test", json.dumps(result))
+        self.assertNotIn("password", json.dumps(result))
+
     def test_email_template_inspection_distinguishes_missing_unstyled_and_unreadable(self):
         class EmailClient(Client):
             def __init__(self, items=None, denied=False):
@@ -88,6 +124,8 @@ class MonitoringInventoryTest(unittest.TestCase):
                     if self.denied:
                         raise OperationError("ops.change.kubernetes")
                     return {"items": self.items or []}
+                if kind == "configmap":
+                    return None
                 return super().get(kind, name, namespace, optional)
 
         missing = collect(EmailClient())["emailTemplate"]

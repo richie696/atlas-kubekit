@@ -1,0 +1,8 @@
+# The monitoring OIDC provider uses an internally signed TLS certificate and a
+# Gateway API Backend with BackendTLSPolicy for hostname and CA verification.
+# Envoy Gateway keeps the Backend API disabled by default; enable only when the
+# private OIDC CA bundle is configured by the monitoring public-access flow.
+config:
+  envoyGateway:
+    extensionApis:
+      enableBackend: true
